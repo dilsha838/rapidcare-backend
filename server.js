@@ -7,12 +7,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ MYSQL CONNECTION
+// ✅ MYSQL CONNECTION - Railway variables
 const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "",
-  database: "rapidcare",
+  host: process.env.MYSQLHOST,
+  user: process.env.MYSQLUSER,
+  password: process.env.MYSQLPASSWORD,
+  database: process.env.MYSQLDATABASE,
+  port: process.env.MYSQLPORT,
 });
 db.connect((err) => {
   if (err) {
@@ -356,7 +357,7 @@ app.get("/branches", (req, res) => {
   );
 });
 
-// ✅ BOOKINGS — token auto-increment + queue auto-update
+// ✅ BOOKINGS
 app.post("/bookings", (req, res) => {
   const {
     branchName,
@@ -368,14 +369,12 @@ app.post("/bookings", (req, res) => {
     userName,
     userEmail,
   } = req.body;
-
   db.query(
     "SELECT MAX(token_number) as lastToken FROM bookings WHERE branch = ? AND booking_date = ?",
     [branchName, bookingDate],
     (err, result) => {
       if (err) return res.status(500).json({ error: "DB error" });
       const nextToken = (result[0].lastToken || 0) + 1;
-
       db.query(
         `INSERT INTO bookings (user_name, user_email, branch, booking_date, time_slot, tests, total_amount, token_number, order_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -392,8 +391,6 @@ app.post("/bookings", (req, res) => {
         ],
         (err2, result2) => {
           if (err2) return res.status(500).json({ error: "Insert error" });
-
-          // ✅ Queue table auto-update — branch + date combination
           db.query(
             "SELECT * FROM queue WHERE branch = ? AND date = ?",
             [branchName, bookingDate],
@@ -401,7 +398,6 @@ app.post("/bookings", (req, res) => {
               if (err3) {
                 console.log("Queue check error:", err3);
               } else if (qResult && qResult.length > 0) {
-                // ✅ Existing row — update total_tokens
                 db.query(
                   "UPDATE queue SET total_tokens = ? WHERE branch = ? AND date = ?",
                   [nextToken, branchName, bookingDate],
@@ -410,7 +406,6 @@ app.post("/bookings", (req, res) => {
                   },
                 );
               } else {
-                // ✅ New row — insert with current_number=1
                 db.query(
                   "INSERT INTO queue (branch, date, current_number, total_tokens) VALUES (?, ?, 1, ?)",
                   [branchName, bookingDate, nextToken],
@@ -424,7 +419,6 @@ app.post("/bookings", (req, res) => {
               );
             },
           );
-
           res.json({
             bookingId: result2.insertId,
             tokenNumber: nextToken,
@@ -436,7 +430,6 @@ app.post("/bookings", (req, res) => {
   );
 });
 
-// ✅ GET — user ගේ bookings (DATE_FORMAT fixed)
 app.get("/bookings/my", (req, res) => {
   const email = req.query.email || "";
   db.query(
@@ -453,7 +446,6 @@ app.get("/bookings/my", (req, res) => {
   );
 });
 
-// GET — admin all bookings
 app.get("/bookings/all", (req, res) => {
   const { branch, date } = req.query;
   db.query(
@@ -466,7 +458,6 @@ app.get("/bookings/all", (req, res) => {
   );
 });
 
-// ✅ Cancel booking
 app.put("/bookings/:id/cancel", (req, res) => {
   const { id } = req.params;
   db.query(
@@ -479,7 +470,6 @@ app.put("/bookings/:id/cancel", (req, res) => {
   );
 });
 
-// ✅ BOOKINGS SLOTS
 app.get("/bookings/slots", (req, res) => {
   const { branch, date } = req.query;
   db.query(
@@ -493,6 +483,7 @@ app.get("/bookings/slots", (req, res) => {
 });
 
 // ✅ START SERVER
-app.listen(5000, "0.0.0.0", () => {
-  console.log("🚀 Server running on port 5000");
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
