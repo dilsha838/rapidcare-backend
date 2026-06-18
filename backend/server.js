@@ -9,10 +9,11 @@ app.use(express.json());
 
 // ✅ MYSQL CONNECTION
 const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "",
-  database: "rapidcare",
+  host: process.env.MYSQLHOST || "localhost",
+  user: process.env.MYSQLUSER || "root",
+  password: process.env.MYSQLPASSWORD || "",
+  database: process.env.MYSQLDATABASE || "rapidcare",
+  port: process.env.MYSQLPORT || 3306,
 });
 db.connect((err) => {
   if (err) {
@@ -349,6 +350,7 @@ app.get("/queue/all", (req, res) => {
 });
 
 // ✅ START SERVER
-app.listen(5000, "0.0.0.0", () => {
-  console.log("🚀 Server running on port 5000");
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
