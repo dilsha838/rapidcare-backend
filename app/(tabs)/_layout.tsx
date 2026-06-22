@@ -183,8 +183,8 @@ const styles = StyleSheet.create({
     paddingBottom: Platform.OS === "ios" ? 20 : 8,
     paddingTop: 8,
     paddingHorizontal: 8,
-    marginBottom: 20, // 
-    marginHorizontal: 16, // 
+    marginBottom: 20, // ← මේක add කරන්න
+    marginHorizontal: 16, // ← sides ෙකන් float
     borderRadius: 20, // ← round corners
     elevation: 20,
     shadowColor: "#000",

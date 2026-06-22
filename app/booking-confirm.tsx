@@ -19,8 +19,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const { width } = Dimensions.get("window");
 const API_BASE = "https://rapidcare-backend-production.up.railway.app";
+const MAX_PER_SLOT = 5;
 
-// ─── TYPES ────────────────────────────────────────────────────────────────────
 interface CartItem {
   id: number;
   name: string;
@@ -30,11 +30,18 @@ interface CartItem {
   resultTime: string;
 }
 
-// ─── STATIC DATA ─────────────────────────────────────────────────────────────
+// ✅ LOCAL date — no UTC shift
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${dd}`;
+}
+
 const BRANCHES = [
   {
     id: "b1",
-    name: "RapidCare — Colombo 3",
+    name: "RapidCare — Colombo 03",
     address: "45 Galle Road, Colombo 03",
     distance: "0.8km",
     wait: "~10 mins",
@@ -49,13 +56,27 @@ const BRANCHES = [
   {
     id: "b3",
     name: "RapidCare — Kandy",
-    address: "78 Dalada Veediya, Kandy",
+    address: "78 Peradeniya Road, Kandy",
     distance: "8.5km",
-    wait: "~15 mins",
+    wait: "~20 mins",
+  },
+  {
+    id: "b4",
+    name: "RapidCare — Kuliyapitiya",
+    address: "23 Colombo Road, Kuliyapitiya",
+    distance: "12.0km",
+    wait: "~10 mins",
+  },
+  {
+    id: "b5",
+    name: "RapidCare — Nikaweratiya",
+    address: "15 Kurunegala Road, Nikaweratiya",
+    distance: "18.5km",
+    wait: "~5 mins",
   },
 ];
 
-const TIME_SLOTS = [
+const ALL_SLOTS = [
   "6:30 AM",
   "7:00 AM",
   "7:30 AM",
@@ -68,24 +89,21 @@ const TIME_SLOTS = [
   "3:00 PM",
   "4:00 PM",
 ];
-const BOOKED_SLOTS = ["8:00 AM", "8:30 AM"]; // simulate full slots
 
-// ─── COMPONENT ────────────────────────────────────────────────────────────────
 export default function BookingConfirm() {
   const router = useRouter();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [branch, setBranch] = useState<(typeof BRANCHES)[0] | null>(null);
-  const [timeSlot, setTimeSlot] = useState<string>("");
-  const [bookingDate, setBookingDate] = useState<Date>(
-    new Date(Date.now() + 86400000),
-  ); // tomorrow
+  const [timeSlot, setTimeSlot] = useState("");
+  const [bookingDate, setBookingDate] = useState(new Date());
   const [aiTip, setAiTip] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [bookedSlots, setBookedSlots] = useState<Record<string, number>>({});
+  const [slotsLoading, setSlotsLoading] = useState(false);
 
-  // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const stepAnim = useRef(new Animated.Value(0)).current;
@@ -108,7 +126,53 @@ export default function BookingConfirm() {
     ]).start();
   }, []);
 
-  // Animate step change
+  const loadCart = async () => {
+    try {
+      const data = await AsyncStorage.getItem("cartItems");
+      const savedDate = await AsyncStorage.getItem("selectedDate");
+      if (data) setCartItems(JSON.parse(data));
+      if (savedDate) {
+        const [y, mo, dd] = savedDate.split("-").map(Number);
+        const local = new Date(y, mo - 1, dd, 12, 0, 0);
+        console.log(
+          "[BookingConfirm] savedDate:",
+          savedDate,
+          "→ local:",
+          localDateStr(local),
+        );
+        setBookingDate(local);
+      } else {
+        const t = new Date();
+        setBookingDate(
+          new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1, 12, 0, 0),
+        );
+      }
+    } catch (e) {
+      console.log("[BookingConfirm] loadCart error:", e);
+    }
+  };
+
+  const loadBookedSlots = async (branchName: string) => {
+    setSlotsLoading(true);
+    try {
+      const date = localDateStr(bookingDate);
+      const res = await fetch(
+        `${API_BASE}/bookings/slots?branch=${encodeURIComponent(branchName)}&date=${date}`,
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const slotMap: Record<string, number> = {};
+        data.forEach((row: { time_slot: string; count: number }) => {
+          slotMap[row.time_slot] = row.count;
+        });
+        setBookedSlots(slotMap);
+      }
+    } catch {
+      setBookedSlots({});
+    }
+    setSlotsLoading(false);
+  };
+
   const animateStep = () => {
     Animated.sequence([
       Animated.timing(stepAnim, {
@@ -124,74 +188,59 @@ export default function BookingConfirm() {
     ]).start();
   };
 
-  // Load cart from AsyncStorage
-  const loadCart = async () => {
-    try {
-      const data = await AsyncStorage.getItem("cartItems");
-      if (data) setCartItems(JSON.parse(data));
-    } catch {}
-  };
-
   const cartTotal = cartItems.reduce((s, c) => s + c.price, 0);
   const maxFasting =
     cartItems.length > 0
       ? Math.max(...cartItems.map((c) => c.fastingHours))
       : 0;
 
-  // ── AI Slot Suggestion ───────────────────────────────────────────────────
   const getAiSuggestion = async () => {
     if (cartItems.length === 0) return;
     setAiLoading(true);
     setAiTip("");
     try {
-      const token = await AsyncStorage.getItem("authToken");
       const res = await fetch(`${API_BASE}/ai/suggest-slot`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tests: cartItems.map((t) => t.name),
-          date: bookingDate.toLocaleDateString(),
+          date: localDateStr(bookingDate),
         }),
       });
       if (res.ok) {
-        const data = await res.json();
-        setAiTip(data.suggestion || "");
-      } else {
-        // Fallback tip
+        const d = await res.json();
+        setAiTip(d.suggestion || "");
+      } else
         setAiTip(
           maxFasting >= 8
-            ? `Best time: 7:00 AM — ${maxFasting}h fasting needed. Start fasting at ${maxFasting === 12 ? "7 PM" : "11 PM"} tonight.`
-            : "Best time: 7:30 AM — No fasting required for your tests.",
+            ? `Best time: 7:00 AM — ${maxFasting}h fasting needed.`
+            : "Best time: 7:30 AM — No fasting required.",
         );
-      }
     } catch {
       setAiTip(
         maxFasting >= 8
-          ? `7:00 AM recommended — ${maxFasting}h fasting required. Minimizes discomfort.`
-          : "7:30 AM recommended — No fasting required for your selected tests.",
+          ? `7:00 AM recommended — ${maxFasting}h fasting required.`
+          : "7:30 AM recommended — No fasting required.",
       );
     } finally {
       setAiLoading(false);
     }
   };
 
-  // ── Step navigation ──────────────────────────────────────────────────────
   const goNext = () => {
     if (step === 1 && !branch) {
-      Alert.alert("Select Branch", "Branch  select .");
+      Alert.alert("Select Branch", "Branch  select ");
       return;
     }
     if (step === 2 && !timeSlot) {
-      Alert.alert("Select Time", "Time slot  select .");
+      Alert.alert("Select Time", "Time slot select ");
       return;
     }
     animateStep();
     if (step === 1) {
       setStep(2);
       getAiSuggestion();
+      if (branch) loadBookedSlots(branch.name);
     } else if (step === 2) setStep(3);
   };
 
@@ -203,44 +252,100 @@ export default function BookingConfirm() {
     }
   };
 
-  // ── Confirm Booking ──────────────────────────────────────────────────────
+  // ✅ handleConfirm — userEmail added to lastToken & bookingData
   const handleConfirm = async () => {
     setLoading(true);
+    const dateStr = localDateStr(bookingDate);
+    console.log("[BookingConfirm] saving booking for date:", dateStr);
     try {
-      const token = await AsyncStorage.getItem("authToken");
+      const userData = await AsyncStorage.getItem("user");
+      const user = userData ? JSON.parse(userData) : {};
+      const orderId = "RC" + Date.now();
+
       const res = await fetch(`${API_BASE}/bookings`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tests: cartItems.map((t) => t.id),
-          branchId: branch?.id,
+          userName: user.name || "Patient",
+          userEmail: user.email || "",
           branchName: branch?.name,
+          bookingDate: dateStr,
           timeSlot,
-          appointmentDate: bookingDate.toISOString(),
+          tests: cartItems.map((t) => ({ name: t.name, price: t.price })),
           totalAmount: cartTotal,
+          orderId,
         }),
       });
+
       const data = await res.json();
-      if (res.ok) {
-        await AsyncStorage.removeItem("cartItems");
-        await AsyncStorage.setItem("lastBooking", JSON.stringify(data));
-        router.replace("/payment");
-      } else {
-        Alert.alert("Booking Failed", data.message || "Try again.");
-      }
-    } catch {
-      // Simulate success for demo
+      const tokenNumber =
+        data.tokenNumber || Math.floor(Math.random() * 90) + 1;
+
+      // ✅ lastToken — userEmail included for notification isolation
+      await AsyncStorage.setItem(
+        "lastToken",
+        JSON.stringify({
+          tokenNumber,
+          branch: branch?.name,
+          date: dateStr,
+          timeSlot,
+          userEmail: user.email || "", // ✅ notification user check
+          tests: cartItems.map((t) => ({ name: t.name, price: t.price })),
+          totalAmount: cartTotal,
+          orderId,
+          paidAt: new Date().toISOString(),
+        }),
+      );
+
+      // ✅ bookingData — userEmail included
+      await AsyncStorage.setItem(
+        "bookingData",
+        JSON.stringify({
+          bookingId: data.bookingId,
+          tokenNumber,
+          branch: branch?.name,
+          date: dateStr,
+          timeSlot,
+          userEmail: user.email || "", // ✅
+          tests: cartItems.map((t) => ({ name: t.name, price: t.price })),
+          totalAmount: cartTotal,
+        }),
+      );
+
       await AsyncStorage.removeItem("cartItems");
+      await AsyncStorage.removeItem("selectedDate");
+      router.replace("/payment");
+    } catch (e) {
+      console.log("[BookingConfirm] confirm error:", e);
+      // catch block ෙකෙකේ ද userEmail save
+      const userData2 = await AsyncStorage.getItem("user");
+      const user2 = userData2 ? JSON.parse(userData2) : {};
+      const orderId2 = "RC" + Date.now();
+      const tokenNumber2 = Math.floor(Math.random() * 90) + 1;
+
+      await AsyncStorage.setItem(
+        "lastToken",
+        JSON.stringify({
+          tokenNumber: tokenNumber2,
+          branch: branch?.name,
+          date: dateStr,
+          timeSlot,
+          userEmail: user2.email || "", // ✅
+          tests: cartItems.map((t) => ({ name: t.name, price: t.price })),
+          totalAmount: cartTotal,
+          orderId: orderId2,
+          paidAt: new Date().toISOString(),
+        }),
+      );
+
+      await AsyncStorage.removeItem("cartItems");
+      await AsyncStorage.removeItem("selectedDate");
       router.replace("/payment");
     } finally {
       setLoading(false);
     }
   };
 
-  // ── Fasting start time ───────────────────────────────────────────────────
   const getFastingTime = () => {
     if (maxFasting === 0) return null;
     if (!timeSlot) return `${maxFasting} hours before appointment`;
@@ -254,18 +359,25 @@ export default function BookingConfirm() {
     return `${display}:${m.toString().padStart(2, "0")} ${ampm} (previous day)`;
   };
 
-  // ─── RENDER ───────────────────────────────────────────────────────────────
+  const getSlotStatus = (slot: string) => {
+    const count = bookedSlots[slot] || 0;
+    if (count >= MAX_PER_SLOT) return "full";
+    if (count >= MAX_PER_SLOT - 2) return "almost";
+    return "available";
+  };
+
+  const displayDate = (d: Date, opts: Intl.DateTimeFormatOptions) =>
+    d.toLocaleDateString("en-LK", opts);
+
   return (
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor="#050510" />
-
-      {/* Bg blobs */}
       <View style={s.bgAbs} pointerEvents="none">
         <View style={s.blobTL} />
         <View style={s.blobBR} />
       </View>
 
-      {/* ── HEADER ─────────────────────────────────────────────────────── */}
+      {/* Header */}
       <Animated.View
         style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
       >
@@ -286,15 +398,11 @@ export default function BookingConfirm() {
             </View>
             <View style={{ width: 36 }} />
           </View>
-
-          {/* Progress bar */}
           <View style={s.progressTrack}>
-            <Animated.View
-              style={[s.progressFill, { width: `${(step / 3) * 100}%` }]}
+            <View
+              style={[s.progressFill, { width: `${(step / 3) * 100}%` as any }]}
             />
           </View>
-
-          {/* Step dots */}
           <View style={s.stepDots}>
             {[1, 2, 3].map((n) => (
               <View key={n} style={s.stepDotWrap}>
@@ -326,7 +434,6 @@ export default function BookingConfirm() {
         </LinearGradient>
       </Animated.View>
 
-      {/* ── CONTENT ────────────────────────────────────────────────────── */}
       <ScrollView
         style={s.scroll}
         showsVerticalScrollIndicator={false}
@@ -335,7 +442,7 @@ export default function BookingConfirm() {
         <Animated.View
           style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
         >
-          {/* ── CART SUMMARY (always visible) ──────────────────────────── */}
+          {/* Cart summary */}
           <View style={s.cartSummary}>
             <View style={s.cartSummaryLeft}>
               <Ionicons name="cart-outline" size={16} color="#3B82F6" />
@@ -356,12 +463,15 @@ export default function BookingConfirm() {
                 </View>
               )}
             </View>
-            <Text style={s.cartSummaryTotal}>
-              Rs. {cartTotal.toLocaleString()}
-            </Text>
+            <View style={{ alignItems: "flex-end" }}>
+              <Text style={s.cartSummaryTotal}>
+                Rs. {cartTotal.toLocaleString()}
+              </Text>
+              <Text style={s.cartSummaryDate}>{localDateStr(bookingDate)}</Text>
+            </View>
           </View>
 
-          {/* ── STEP 1 — BRANCH ────────────────────────────────────────── */}
+          {/* Step 1 */}
           {step === 1 && (
             <View style={s.section}>
               <Text style={s.sectionTitle}>Select a Branch</Text>
@@ -432,10 +542,9 @@ export default function BookingConfirm() {
             </View>
           )}
 
-          {/* ── STEP 2 — TIME SLOT ─────────────────────────────────────── */}
+          {/* Step 2 */}
           {step === 2 && (
             <View style={s.section}>
-              {/* AI suggestion */}
               <View style={s.aiCard}>
                 <View style={s.aiCardHeader}>
                   <View style={s.aiIconWrap}>
@@ -450,73 +559,101 @@ export default function BookingConfirm() {
                     />
                   )}
                 </View>
-                {aiLoading ? (
-                  <Text style={s.aiCardText}>
-                    Calculating best time for your tests...
-                  </Text>
-                ) : (
-                  <Text style={s.aiCardText}>
-                    {aiTip || "Select a time slot below."}
-                  </Text>
-                )}
+                <Text style={s.aiCardText}>
+                  {aiLoading
+                    ? "Calculating best time..."
+                    : aiTip || "Select a time slot below."}
+                </Text>
               </View>
-
-              {/* Fasting warning */}
               {maxFasting > 0 && (
                 <View style={s.fastingWarn}>
                   <Ionicons name="warning-outline" size={16} color="#F59E0B" />
                   <View style={{ flex: 1 }}>
                     <Text style={s.fastingWarnTitle}>Fasting Required</Text>
                     <Text style={s.fastingWarnText}>
-                      {maxFasting} hours fasting needed.
+                      {maxFasting}h fasting needed.
                       {timeSlot
-                        ? ` Start fasting at: ${getFastingTime()}`
-                        : " Select a time to see fasting start time."}
+                        ? ` Start at: ${getFastingTime()}`
+                        : " Select a time slot."}
                     </Text>
                   </View>
                 </View>
               )}
-
-              {/* Date info */}
               <View style={s.dateRow}>
                 <Ionicons name="calendar-outline" size={16} color="#3B82F6" />
                 <Text style={s.dateText}>
-                  {bookingDate.toLocaleDateString("en-LK", {
+                  {displayDate(bookingDate, {
                     weekday: "long",
                     year: "numeric",
                     month: "long",
                     day: "numeric",
                   })}
                 </Text>
+                <View style={s.dateBadge}>
+                  <Text style={s.dateBadgeText}>
+                    {localDateStr(bookingDate)}
+                  </Text>
+                </View>
               </View>
-
-              <Text style={s.sectionTitle}>Available Time Slots</Text>
+              <View style={s.legendRow}>
+                <View style={s.legendItem}>
+                  <View style={[s.legendDot, { backgroundColor: "#10B981" }]} />
+                  <Text style={s.legendText}>Available</Text>
+                </View>
+                <View style={s.legendItem}>
+                  <View style={[s.legendDot, { backgroundColor: "#F59E0B" }]} />
+                  <Text style={s.legendText}>Almost Full</Text>
+                </View>
+                <View style={s.legendItem}>
+                  <View style={[s.legendDot, { backgroundColor: "#EF4444" }]} />
+                  <Text style={s.legendText}>Full</Text>
+                </View>
+              </View>
+              <Text style={s.sectionTitle}>
+                Available Time Slots
+                {slotsLoading && (
+                  <ActivityIndicator
+                    size="small"
+                    color="#3B82F6"
+                    style={{ marginLeft: 8 }}
+                  />
+                )}
+              </Text>
               <View style={s.slotsGrid}>
-                {TIME_SLOTS.map((slot) => {
-                  const isBooked = BOOKED_SLOTS.includes(slot);
-                  const isSelected = timeSlot === slot;
+                {ALL_SLOTS.map((slot) => {
+                  const status = getSlotStatus(slot);
+                  const isFull = status === "full",
+                    isAlmost = status === "almost",
+                    isSel = timeSlot === slot;
+                  const count = bookedSlots[slot] || 0;
                   return (
                     <TouchableOpacity
                       key={slot}
                       style={[
                         s.slotPill,
-                        isSelected && s.slotPillActive,
-                        isBooked && s.slotPillBooked,
+                        isSel && s.slotPillActive,
+                        isFull && s.slotPillBooked,
+                        isAlmost && !isSel && s.slotPillAlmost,
                       ]}
-                      onPress={() => !isBooked && setTimeSlot(slot)}
-                      disabled={isBooked}
+                      onPress={() => !isFull && setTimeSlot(slot)}
+                      disabled={isFull}
                       activeOpacity={0.8}
                     >
                       <Text
                         style={[
                           s.slotText,
-                          isSelected && s.slotTextActive,
-                          isBooked && s.slotTextBooked,
+                          isSel && s.slotTextActive,
+                          isFull && s.slotTextBooked,
                         ]}
                       >
                         {slot}
                       </Text>
-                      {isBooked && <Text style={s.slotFullText}>Full</Text>}
+                      {isFull && <Text style={s.slotFullText}>Full</Text>}
+                      {isAlmost && !isFull && (
+                        <Text style={s.slotAlmostText}>
+                          {MAX_PER_SLOT - count} left
+                        </Text>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -524,18 +661,15 @@ export default function BookingConfirm() {
             </View>
           )}
 
-          {/* ── STEP 3 — CONFIRM ───────────────────────────────────────── */}
+          {/* Step 3 */}
           {step === 3 && (
             <View style={s.section}>
               <Text style={s.sectionTitle}>Booking Summary</Text>
-
-              {/* Summary card */}
               <View style={s.summaryCard}>
                 <LinearGradient
                   colors={["#0E0E28", "#13133A"]}
                   style={s.summaryGrad}
                 >
-                  {/* Branch */}
                   <View style={s.summaryRow}>
                     <View style={s.summaryIconWrap}>
                       <Ionicons name="location" size={16} color="#3B82F6" />
@@ -546,10 +680,7 @@ export default function BookingConfirm() {
                       <Text style={s.summarySubValue}>{branch?.address}</Text>
                     </View>
                   </View>
-
                   <View style={s.summaryDivider} />
-
-                  {/* Date & Time */}
                   <View style={s.summaryRow}>
                     <View style={s.summaryIconWrap}>
                       <Ionicons name="calendar" size={16} color="#A855F7" />
@@ -558,7 +689,8 @@ export default function BookingConfirm() {
                       <Text style={s.summaryLabel}>Appointment</Text>
                       <Text style={s.summaryValue}>{timeSlot}</Text>
                       <Text style={s.summarySubValue}>
-                        {bookingDate.toLocaleDateString("en-LK", {
+                        {localDateStr(bookingDate)} ·{" "}
+                        {displayDate(bookingDate, {
                           weekday: "long",
                           month: "short",
                           day: "numeric",
@@ -566,10 +698,7 @@ export default function BookingConfirm() {
                       </Text>
                     </View>
                   </View>
-
                   <View style={s.summaryDivider} />
-
-                  {/* Tests */}
                   <View style={s.summaryRow}>
                     <View style={s.summaryIconWrap}>
                       <Ionicons name="flask" size={16} color="#10B981" />
@@ -588,10 +717,7 @@ export default function BookingConfirm() {
                       ))}
                     </View>
                   </View>
-
                   <View style={s.summaryDivider} />
-
-                  {/* Total */}
                   <View style={s.totalRow}>
                     <Text style={s.totalLabel}>Total Amount</Text>
                     <Text style={s.totalValue}>
@@ -600,8 +726,6 @@ export default function BookingConfirm() {
                   </View>
                 </LinearGradient>
               </View>
-
-              {/* Fasting reminder */}
               {maxFasting > 0 && (
                 <View style={s.fastingReminder}>
                   <Ionicons name="alarm-outline" size={18} color="#F59E0B" />
@@ -613,8 +737,6 @@ export default function BookingConfirm() {
                   </View>
                 </View>
               )}
-
-              {/* Payment note */}
               <View style={s.payNote}>
                 <Ionicons name="card-outline" size={16} color="#3B82F6" />
                 <Text style={s.payNoteText}>
@@ -627,7 +749,7 @@ export default function BookingConfirm() {
         </Animated.View>
       </ScrollView>
 
-      {/* ── BOTTOM ACTION ──────────────────────────────────────────────── */}
+      {/* Bottom bar */}
       <View style={s.bottomBar}>
         {step > 1 && (
           <TouchableOpacity style={s.prevBtn} onPress={goBack}>
@@ -671,10 +793,8 @@ export default function BookingConfirm() {
   );
 }
 
-// ─── STYLES ──────────────────────────────────────────────────────────────────
-const CARD_BG = "#0E0E24";
-const BORDER = "#1C1C3A";
-
+const CARD_BG = "#0E0E24",
+  BORDER = "#1C1C3A";
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#050510" },
   bgAbs: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
@@ -696,8 +816,6 @@ const s = StyleSheet.create({
     bottom: 80,
     right: -40,
   },
-
-  // Header
   header: {
     paddingTop: 52,
     paddingHorizontal: 16,
@@ -750,8 +868,6 @@ const s = StyleSheet.create({
   stepDotTextActive: { color: "#fff" },
   stepDotLabel: { fontSize: 9, color: "#333358", letterSpacing: 0.3 },
   stepDotLabelActive: { color: "rgba(255,255,255,0.6)" },
-
-  // Cart summary bar
   cartSummary: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -783,8 +899,12 @@ const s = StyleSheet.create({
   },
   cartChipText: { fontSize: 9, color: "#3B82F6", fontWeight: "600" },
   cartSummaryTotal: { fontSize: 15, fontWeight: "800", color: "#fff" },
-
-  // Section
+  cartSummaryDate: {
+    fontSize: 11,
+    color: "#3B82F6",
+    marginTop: 2,
+    fontWeight: "700",
+  },
   scroll: { flex: 1 },
   section: { paddingHorizontal: 16, paddingTop: 8 },
   sectionTitle: {
@@ -794,8 +914,6 @@ const s = StyleSheet.create({
     marginBottom: 12,
     letterSpacing: -0.2,
   },
-
-  // Branch cards
   branchCard: {
     backgroundColor: CARD_BG,
     borderRadius: 18,
@@ -838,8 +956,6 @@ const s = StyleSheet.create({
   branchTag: { flexDirection: "row", alignItems: "center", gap: 3 },
   branchTagText: { fontSize: 10, color: "#555580" },
   selectedTick: { marginLeft: 8 },
-
-  // AI card
   aiCard: {
     backgroundColor: "rgba(168,85,247,0.08)",
     borderRadius: 16,
@@ -864,8 +980,6 @@ const s = StyleSheet.create({
   },
   aiCardTitle: { fontSize: 12, fontWeight: "700", color: "#A855F7" },
   aiCardText: { fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 18 },
-
-  // Fasting warning
   fastingWarn: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -888,17 +1002,29 @@ const s = StyleSheet.create({
     color: "rgba(255,255,255,0.5)",
     lineHeight: 16,
   },
-
-  // Date row
   dateRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  dateText: { fontSize: 13, color: "rgba(255,255,255,0.6)", fontWeight: "500" },
-
-  // Time slots
+  dateText: {
+    fontSize: 13,
+    color: "rgba(255,255,255,0.6)",
+    fontWeight: "500",
+    flex: 1,
+  },
+  dateBadge: {
+    backgroundColor: "rgba(59,130,246,0.15)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  dateBadgeText: { fontSize: 11, color: "#3B82F6", fontWeight: "700" },
+  legendRow: { flexDirection: "row", gap: 16, marginBottom: 12 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  legendText: { fontSize: 11, color: "#555580" },
   slotsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   slotPill: {
     width: (width - 64) / 4,
@@ -911,16 +1037,19 @@ const s = StyleSheet.create({
   },
   slotPillActive: { backgroundColor: "#3B82F6", borderColor: "#3B82F6" },
   slotPillBooked: {
-    backgroundColor: "#08080E",
-    borderColor: "#111128",
-    opacity: 0.5,
+    backgroundColor: "#1A0808",
+    borderColor: "#3A1010",
+    opacity: 0.6,
+  },
+  slotPillAlmost: {
+    borderColor: "#F59E0B",
+    backgroundColor: "rgba(245,158,11,0.06)",
   },
   slotText: { fontSize: 11, fontWeight: "600", color: "rgba(255,255,255,0.7)" },
   slotTextActive: { color: "#fff" },
   slotTextBooked: { color: "#333358" },
-  slotFullText: { fontSize: 8, color: "#333358", marginTop: 2 },
-
-  // Summary
+  slotFullText: { fontSize: 8, color: "#EF4444", marginTop: 2 },
+  slotAlmostText: { fontSize: 8, color: "#F59E0B", marginTop: 2 },
   summaryCard: {
     borderRadius: 20,
     overflow: "hidden",
@@ -973,8 +1102,6 @@ const s = StyleSheet.create({
     color: "rgba(255,255,255,0.5)",
   },
   totalValue: { fontSize: 22, fontWeight: "800", color: "#fff" },
-
-  // Fasting reminder
   fastingReminder: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -997,8 +1124,6 @@ const s = StyleSheet.create({
     color: "rgba(255,255,255,0.5)",
     lineHeight: 16,
   },
-
-  // Pay note
   payNote: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1015,8 +1140,6 @@ const s = StyleSheet.create({
     flex: 1,
     lineHeight: 16,
   },
-
-  // Bottom bar
   bottomBar: {
     position: "absolute",
     bottom: 0,

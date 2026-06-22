@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StatusBar,
-  Dimensions,
   Animated,
   Easing,
   Linking,
@@ -16,9 +15,6 @@ import { useRouter } from "expo-router";
 import { useRef, useEffect, useState } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 
-const { width } = Dimensions.get("window");
-
-// ─── BRANCH DATA ──────────────────────────────────────────────────────────────
 const BRANCHES = [
   {
     id: "1",
@@ -30,20 +26,17 @@ const BRANCHES = [
     color: "#3B82F6",
     bg: "rgba(59,130,246,0.12)",
     mapUrl: "https://maps.google.com/?q=Colombo+03+Sri+Lanka",
-    lat: "6.8935",
-    lng: "79.8530",
     badge: "Main Branch",
-    badgeColor: "#3B82F6",
     services: [
       "CBC",
       "Lipid Profile",
       "Thyroid",
       "Vitamin D",
       "HbA1c",
-      "Liver",
-      "Kidney",
+      "Liver Function",
+      "Kidney Function",
       "ESR",
-      "Urine",
+      "Urine Full",
     ],
     parking: true,
     ac: true,
@@ -60,18 +53,15 @@ const BRANCHES = [
     color: "#A855F7",
     bg: "rgba(168,85,247,0.12)",
     mapUrl: "https://maps.google.com/?q=Nugegoda+Sri+Lanka",
-    lat: "6.8728",
-    lng: "79.8904",
     badge: "South Branch",
-    badgeColor: "#A855F7",
     services: [
       "CBC",
       "Blood Sugar",
       "Lipid Profile",
       "Thyroid",
-      "Liver",
-      "Kidney",
-      "Urine",
+      "Liver Function",
+      "Kidney Function",
+      "Urine Full",
     ],
     parking: true,
     ac: true,
@@ -88,16 +78,13 @@ const BRANCHES = [
     color: "#10B981",
     bg: "rgba(16,185,129,0.12)",
     mapUrl: "https://maps.google.com/?q=Kandy+Sri+Lanka",
-    lat: "7.2906",
-    lng: "80.6337",
     badge: "Central Branch",
-    badgeColor: "#10B981",
     services: [
       "CBC",
       "Blood Sugar",
       "Lipid Profile",
       "Thyroid",
-      "Urine",
+      "Urine Full",
       "ESR",
     ],
     parking: false,
@@ -105,9 +92,42 @@ const BRANCHES = [
     wifi: true,
     waitTime: "~20 mins",
   },
+  {
+    id: "4",
+    name: "Kuliyapitiya",
+    address: "No. 23, Colombo Road, Kuliyapitiya",
+    phone: "+94 37 228 1234",
+    hours: "7:00 AM – 5:00 PM",
+    days: "Mon – Sat",
+    color: "#F59E0B",
+    bg: "rgba(245,158,11,0.12)",
+    mapUrl: "https://maps.google.com/?q=Kuliyapitiya+Sri+Lanka",
+    badge: "North Branch",
+    services: ["CBC", "Blood Sugar", "Lipid Profile", "Urine Full", "ESR"],
+    parking: true,
+    ac: true,
+    wifi: false,
+    waitTime: "~10 mins",
+  },
+  {
+    id: "5",
+    name: "Nikaweratiya",
+    address: "No. 15, Kurunegala Road, Nikaweratiya",
+    phone: "+94 37 226 5678",
+    hours: "7:30 AM – 4:30 PM",
+    days: "Mon – Fri",
+    color: "#EC4899",
+    bg: "rgba(236,72,153,0.12)",
+    mapUrl: "https://maps.google.com/?q=Nikaweratiya+Sri+Lanka",
+    badge: "West Branch",
+    services: ["CBC", "Blood Sugar", "Urine Full", "ESR"],
+    parking: false,
+    ac: false,
+    wifi: false,
+    waitTime: "~5 mins",
+  },
 ];
 
-// ─── COMPONENT ────────────────────────────────────────────────────────────────
 export default function BranchesScreen() {
   const router = useRouter();
   const [selected, setSelected] = useState<string | null>(null);
@@ -149,17 +169,12 @@ export default function BranchesScreen() {
     ).start();
   }, []);
 
-  const openMap = (branch: (typeof BRANCHES)[0]) => {
-    Linking.openURL(branch.mapUrl).catch(() =>
-      Alert.alert("Error", "Cannot open maps."),
-    );
-  };
-
-  const callBranch = (phone: string) => {
+  const openMap = (url: string) =>
+    Linking.openURL(url).catch(() => Alert.alert("Error", "Cannot open maps."));
+  const callBranch = (phone: string) =>
     Linking.openURL(`tel:${phone}`).catch(() =>
       Alert.alert("Error", "Cannot make call."),
     );
-  };
 
   const glowOpacity = glowAnim.interpolate({
     inputRange: [0, 1],
@@ -170,13 +185,12 @@ export default function BranchesScreen() {
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor="#050510" />
 
-      {/* Bg */}
       <View style={s.bgAbs} pointerEvents="none">
         <Animated.View style={[s.blobTL, { opacity: glowOpacity }]} />
         <Animated.View style={[s.blobBR, { opacity: glowOpacity }]} />
       </View>
 
-      {/* Header */}
+      {/* HEADER */}
       <Animated.View
         style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
       >
@@ -188,17 +202,15 @@ export default function BranchesScreen() {
             <View style={{ flex: 1 }}>
               <Text style={s.headerTitle}>Find a Branch</Text>
               <Text style={s.headerSub}>
-                3 branches islandwide · Open 7 days
+                {BRANCHES.length} branches islandwide
               </Text>
             </View>
           </View>
-
-          {/* Stats row */}
           <View style={s.statsRow}>
             {[
               {
                 icon: "location" as const,
-                label: "3 Branches",
+                label: `${BRANCHES.length} Branches`,
                 color: "#3B82F6",
               },
               { icon: "time" as const, label: "Open Daily", color: "#A855F7" },
@@ -240,7 +252,7 @@ export default function BranchesScreen() {
                   />
 
                   <View style={s.branchBody}>
-                    {/* Header */}
+                    {/* Header — tap to expand */}
                     <TouchableOpacity
                       style={s.branchHeader}
                       onPress={() => setSelected(isOpen ? null : branch.id)}
@@ -266,14 +278,11 @@ export default function BranchesScreen() {
                           <View
                             style={[
                               s.badge,
-                              { backgroundColor: `${branch.badgeColor}20` },
+                              { backgroundColor: `${branch.color}20` },
                             ]}
                           >
                             <Text
-                              style={[
-                                s.badgeText,
-                                { color: branch.badgeColor },
-                              ]}
+                              style={[s.badgeText, { color: branch.color }]}
                             >
                               {branch.badge}
                             </Text>
@@ -297,7 +306,7 @@ export default function BranchesScreen() {
                       />
                     </TouchableOpacity>
 
-                    {/* Address row */}
+                    {/* Address */}
                     <View style={s.addressRow}>
                       <Ionicons
                         name="location-outline"
@@ -351,12 +360,10 @@ export default function BranchesScreen() {
                       </View>
                     </View>
 
-                    {/* Expanded details */}
+                    {/* Expanded section */}
                     {isOpen && (
-                      <View style={s.expandedSection}>
+                      <View>
                         <View style={s.divider} />
-
-                        {/* Available tests */}
                         <Text style={s.expandTitle}>Available Tests</Text>
                         <View style={s.testsWrap}>
                           {branch.services.map((svc, i) => (
@@ -381,17 +388,22 @@ export default function BranchesScreen() {
                             </View>
                           ))}
                         </View>
-
-                        {/* Contact */}
                         <Text style={s.expandTitle}>Contact</Text>
-                        <View style={s.contactRow}>
+                        <TouchableOpacity
+                          style={s.contactRow}
+                          onPress={() => callBranch(branch.phone)}
+                        >
                           <Ionicons
                             name="call-outline"
                             size={14}
-                            color="#555580"
+                            color={branch.color}
                           />
-                          <Text style={s.contactText}>{branch.phone}</Text>
-                        </View>
+                          <Text
+                            style={[s.contactText, { color: branch.color }]}
+                          >
+                            {branch.phone}
+                          </Text>
+                        </TouchableOpacity>
                       </View>
                     )}
 
@@ -399,7 +411,7 @@ export default function BranchesScreen() {
                     <View style={s.actionRow}>
                       <TouchableOpacity
                         style={s.mapBtn}
-                        onPress={() => openMap(branch)}
+                        onPress={() => openMap(branch.mapUrl)}
                         activeOpacity={0.85}
                       >
                         <Ionicons
@@ -408,7 +420,7 @@ export default function BranchesScreen() {
                           color={branch.color}
                         />
                         <Text style={[s.mapBtnText, { color: branch.color }]}>
-                          Get Directions
+                          Directions
                         </Text>
                       </TouchableOpacity>
 
@@ -422,7 +434,6 @@ export default function BranchesScreen() {
                           size={15}
                           color="#555580"
                         />
-                        <Text style={s.callBtnText}>Call</Text>
                       </TouchableOpacity>
 
                       <TouchableOpacity
@@ -451,7 +462,7 @@ export default function BranchesScreen() {
             );
           })}
 
-          {/* Info card */}
+          {/* INFO CARD */}
           <View style={s.infoCard}>
             <LinearGradient colors={["#0C0C22", "#0E0E28"]} style={s.infoGrad}>
               <Text style={s.infoTitle}>📞 General Inquiries</Text>
@@ -470,7 +481,6 @@ export default function BranchesScreen() {
                   <Text style={s.hotlineBtnText}>+94 11 234 5678</Text>
                 </LinearGradient>
               </TouchableOpacity>
-
               <View style={s.infoRowsWrap}>
                 {[
                   { icon: "mail-outline" as const, text: "info@rapidcare.lk" },
@@ -491,7 +501,6 @@ export default function BranchesScreen() {
   );
 }
 
-// ─── STYLES ──────────────────────────────────────────────────────────────────
 const BORDER = "#1C1C3A";
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#050510" },
@@ -538,7 +547,6 @@ const s = StyleSheet.create({
   },
   headerTitle: { fontSize: 18, fontWeight: "800", color: "#fff" },
   headerSub: { fontSize: 11, color: "#555580", marginTop: 2 },
-
   statsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   statChip: {
     flexDirection: "row",
@@ -565,7 +573,6 @@ const s = StyleSheet.create({
   branchGrad: {},
   branchTopBar: { height: 4 },
   branchBody: { padding: 14 },
-
   branchHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -618,7 +625,6 @@ const s = StyleSheet.create({
   amenity: { flexDirection: "row", alignItems: "center", gap: 4 },
   amenityText: { fontSize: 11, color: "#555580" },
 
-  expandedSection: {},
   divider: { height: 0.5, backgroundColor: BORDER, marginVertical: 12 },
   expandTitle: {
     fontSize: 12,
@@ -646,7 +652,7 @@ const s = StyleSheet.create({
     gap: 6,
     marginBottom: 12,
   },
-  contactText: { fontSize: 13, color: "#fff", fontWeight: "600" },
+  contactText: { fontSize: 13, fontWeight: "600" },
 
   actionRow: { flexDirection: "row", gap: 8 },
   mapBtn: {
@@ -672,7 +678,6 @@ const s = StyleSheet.create({
     borderColor: BORDER,
     backgroundColor: "rgba(255,255,255,0.04)",
   },
-  callBtnText: { fontSize: 11, color: "#555580" },
   bookBtn: { flex: 2, borderRadius: 12, overflow: "hidden" },
   bookBtnGrad: {
     flexDirection: "row",

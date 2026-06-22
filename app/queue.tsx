@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StatusBar,
-  Dimensions,
   Animated,
   Easing,
   RefreshControl,
@@ -16,7 +15,6 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-const { width } = Dimensions.get("window");
 const API_BASE = "https://rapidcare-backend-production.up.railway.app";
 
 interface QueueData {
@@ -31,25 +29,62 @@ interface QueueData {
   tests: string[];
 }
 
-const getMockQueue = (tokenData: any): QueueData => {
-  const myNumber = tokenData?.tokenNumber || 12;
-  const currentNumber = Math.max(
-    1,
-    myNumber - Math.floor(Math.random() * 4) - 1,
+// ✅ LOCAL today string
+function localToday(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+
+// ✅ Parse "7:00 AM" + "2026-06-05" → Date (local)
+function parseSlotDateTime(timeSlot: string, dateStr: string): Date {
+  try {
+    const [time, period] = timeSlot.trim().split(" ");
+    const [hStr, mStr] = time.split(":");
+    let hour = parseInt(hStr);
+    const min = parseInt(mStr);
+    if (period === "PM" && hour !== 12) hour += 12;
+    if (period === "AM" && hour === 12) hour = 0;
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    const dt = new Date(y, mo - 1, d, hour, min, 0, 0);
+    return dt;
+  } catch {
+    return new Date();
+  }
+}
+
+function calcStatus(
+  myNum: number,
+  currentNum: number,
+  timeSlot: string,
+  dateStr: string,
+): "waiting" | "almost" | "ready" | "done" {
+  const now = new Date();
+  const slotEnd = new Date(
+    parseSlotDateTime(timeSlot, dateStr).getTime() + 30 * 60 * 1000,
   );
+  if (now > slotEnd) return "done";
+  const ahead = myNum - currentNum;
+  if (ahead <= 0) return "ready";
+  if (ahead <= 2) return "almost";
+  return "waiting";
+}
+
+const getMockQueue = (parsed: any): QueueData => {
+  const myNumber = parsed?.tokenNumber || 1;
+  const currentNumber = Math.max(1, myNumber - 2);
   const peopleAhead = Math.max(0, myNumber - currentNumber);
-  const waitTime = peopleAhead * 8;
+  const timeSlot = parsed?.timeSlot || "7:00 AM";
+  const date = parsed?.date || localToday();
   return {
     currentNumber,
     myNumber,
     peopleAhead,
-    estimatedWait: waitTime,
-    status:
-      peopleAhead === 0 ? "ready" : peopleAhead <= 2 ? "almost" : "waiting",
-    branch: tokenData?.branch || "RapidCare — Colombo 03",
-    timeSlot: tokenData?.timeSlot || "7:00 AM",
-    date: tokenData?.date || new Date().toISOString().split("T")[0],
-    tests: tokenData?.tests?.map((t: any) => t.name) || ["CBC", "Blood Sugar"],
+    estimatedWait: peopleAhead * 8,
+    status: calcStatus(myNumber, currentNumber, timeSlot, date),
+    branch: parsed?.branch || "RapidCare Lab",
+    timeSlot,
+    date,
+    tests: parsed?.tests?.map((t: any) => t.name) || [],
   };
 };
 
@@ -84,6 +119,38 @@ const STATUS_CONFIG = {
   },
 };
 
+function formatCountdown(
+  timeSlot: string,
+  dateStr: string,
+  status: string,
+): string {
+  if (status === "done") return "Appointment completed ✓";
+  if (status === "ready") return "Your turn now — go to reception!";
+  const slotTime = parseSlotDateTime(timeSlot, dateStr);
+  const diffMs = slotTime.getTime() - new Date().getTime();
+  if (diffMs <= 0) return "Time reached — please proceed";
+  const totalSec = Math.floor(diffMs / 1000);
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (hrs > 0) return `Appointment in ${hrs}h ${mins}m`;
+  if (mins > 0) return `Appointment in ${mins}m ${secs}s`;
+  return `Appointment in ${secs}s`;
+}
+
+function formatBookingDate(dateStr: string): string {
+  try {
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    return new Date(y, mo - 1, d).toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
 export default function QueueScreen() {
   const router = useRouter();
   const [queue, setQueue] = useState<QueueData | null>(null);
@@ -91,6 +158,8 @@ export default function QueueScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [hasToken, setHasToken] = useState(false);
+  const [countdown, setCountdown] = useState("");
+  const [nowTime, setNowTime] = useState(new Date());
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
@@ -114,9 +183,18 @@ export default function QueueScreen() {
         useNativeDriver: true,
       }),
     ]).start();
-    const interval = setInterval(() => loadQueue(true), 30000);
-    return () => clearInterval(interval);
+    const qInterval = setInterval(() => loadQueue(true), 30000);
+    const clockInterval = setInterval(() => setNowTime(new Date()), 1000);
+    return () => {
+      clearInterval(qInterval);
+      clearInterval(clockInterval);
+    };
   }, []);
+
+  useEffect(() => {
+    if (queue)
+      setCountdown(formatCountdown(queue.timeSlot, queue.date, queue.status));
+  }, [nowTime, queue]);
 
   useEffect(() => {
     if (!queue) return;
@@ -167,48 +245,44 @@ export default function QueueScreen() {
   const loadQueue = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const tokenData = await AsyncStorage.getItem("lastToken");
+      // ✅ Check both lastToken AND bookingData
+      let tokenData = await AsyncStorage.getItem("lastToken");
+      if (!tokenData) tokenData = await AsyncStorage.getItem("bookingData");
+
       if (!tokenData) {
         setHasToken(false);
         setLoading(false);
+        setRefreshing(false);
         return;
       }
+
       setHasToken(true);
       const parsed = JSON.parse(tokenData);
+      const branch = parsed?.branch || "RapidCare Lab";
+      // ✅ Use local date — no UTC shift
+      const date = parsed?.date || localToday();
+      const timeSlot = parsed?.timeSlot || "7:00 AM";
+      const myNumber = parsed?.tokenNumber || 1;
+
+      console.log("[Queue] token:", myNumber, "date:", date, "branch:", branch);
+
       try {
-        const token = await AsyncStorage.getItem("authToken");
-        const branch = parsed?.branch || "Colombo 03";
-        const date = parsed?.date || new Date().toISOString().split("T")[0];
         const res = await fetch(
           `${API_BASE}/queue/status?branch=${encodeURIComponent(branch)}&date=${date}`,
-          { headers: { Authorization: `Bearer ${token}` } },
         );
         if (res.ok) {
           const serverData = await res.json();
-          // Merge server data with token data
+          const currentNumber = serverData.currentNumber || 1;
+          const peopleAhead = Math.max(0, myNumber - currentNumber);
           setQueue({
-            currentNumber: serverData.currentNumber || 1,
-            myNumber: parsed?.tokenNumber || 12,
-            peopleAhead: Math.max(
-              0,
-              (parsed?.tokenNumber || 12) - (serverData.currentNumber || 1),
-            ),
-            estimatedWait: Math.max(
-              0,
-              ((parsed?.tokenNumber || 12) - (serverData.currentNumber || 1)) *
-                8,
-            ),
-            status:
-              (parsed?.tokenNumber || 12) <= (serverData.currentNumber || 1)
-                ? "ready"
-                : (parsed?.tokenNumber || 12) -
-                      (serverData.currentNumber || 1) <=
-                    2
-                  ? "almost"
-                  : "waiting",
-            branch: branch,
-            timeSlot: parsed?.timeSlot || "",
-            date: date,
+            currentNumber,
+            myNumber,
+            peopleAhead,
+            estimatedWait: peopleAhead * 8,
+            status: calcStatus(myNumber, currentNumber, timeSlot, date),
+            branch,
+            timeSlot,
+            date,
             tests: parsed?.tests?.map((t: any) => t.name) || [],
           });
         } else {
@@ -218,7 +292,9 @@ export default function QueueScreen() {
         setQueue(getMockQueue(parsed));
       }
       setLastUpdate(new Date());
-    } catch {}
+    } catch (e) {
+      console.log("[Queue] loadQueue error:", e);
+    }
     setLoading(false);
     setRefreshing(false);
   };
@@ -227,12 +303,14 @@ export default function QueueScreen() {
     setRefreshing(true);
     loadQueue(true);
   }, []);
+
   const glowOpacity = glowAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0.3, 0.8],
   });
 
-  if (!loading && !hasToken) {
+  // ── No token ──────────────────────────────────────────────────────────────
+  if (!loading && !hasToken)
     return (
       <View style={s.root}>
         <StatusBar barStyle="light-content" backgroundColor="#050510" />
@@ -269,7 +347,6 @@ export default function QueueScreen() {
         </View>
       </View>
     );
-  }
 
   const statusCfg = queue ? STATUS_CONFIG[queue.status] : STATUS_CONFIG.waiting;
 
@@ -281,6 +358,7 @@ export default function QueueScreen() {
         <Animated.View style={[s.blobBR, { opacity: glowOpacity }]} />
       </View>
 
+      {/* Header */}
       <Animated.View
         style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
       >
@@ -292,7 +370,12 @@ export default function QueueScreen() {
             <View style={{ flex: 1 }}>
               <Text style={s.headerTitle}>Queue Tracking</Text>
               <Text style={s.headerSub}>
-                Updated{" "}
+                {nowTime.toLocaleTimeString("en-US", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
+                {" · "}Updated{" "}
                 {lastUpdate.toLocaleTimeString("en-US", {
                   hour: "2-digit",
                   minute: "2-digit",
@@ -327,7 +410,50 @@ export default function QueueScreen() {
               transform: [{ translateY: slideAnim }],
             }}
           >
-            {/* Status Badge */}
+            {/* Date + countdown banner */}
+            <View
+              style={[
+                s.dateBanner,
+                {
+                  borderColor: `${statusCfg.color}30`,
+                  backgroundColor: `${statusCfg.color}08`,
+                },
+              ]}
+            >
+              <View style={s.dateBannerLeft}>
+                <Ionicons
+                  name="calendar-outline"
+                  size={18}
+                  color={statusCfg.color}
+                />
+                <View>
+                  <Text style={[s.dateBannerDate, { color: statusCfg.color }]}>
+                    {formatBookingDate(queue.date)}
+                  </Text>
+                  <Text style={s.dateBannerSlot}>
+                    Slot: {queue.timeSlot} ·{" "}
+                    {queue.branch.split("—")[1]?.trim() || queue.branch}
+                  </Text>
+                </View>
+              </View>
+              <View
+                style={[
+                  s.countdownBadge,
+                  { backgroundColor: `${statusCfg.color}18` },
+                ]}
+              >
+                <Ionicons
+                  name="alarm-outline"
+                  size={12}
+                  color={statusCfg.color}
+                />
+                <Text style={[s.countdownText, { color: statusCfg.color }]}>
+                  {countdown}
+                </Text>
+              </View>
+            </View>
+
+            {/* Status badge */}
             <Animated.View
               style={[
                 s.statusBadge,
@@ -338,7 +464,7 @@ export default function QueueScreen() {
               ]}
             >
               <Text style={{ fontSize: 28 }}>{statusCfg.icon}</Text>
-              <View>
+              <View style={{ flex: 1 }}>
                 <Text style={[s.statusLabel, { color: statusCfg.color }]}>
                   {statusCfg.label}
                 </Text>
@@ -346,7 +472,7 @@ export default function QueueScreen() {
               </View>
             </Animated.View>
 
-            {/* Token Card */}
+            {/* Token card */}
             <View style={s.tokenCard}>
               <LinearGradient
                 colors={["#0E0E28", "#131340"]}
@@ -374,7 +500,6 @@ export default function QueueScreen() {
                       </Text>
                     </View>
                   </View>
-
                   <View style={s.progressWrap}>
                     <View style={s.progressBg}>
                       <Animated.View
@@ -395,7 +520,6 @@ export default function QueueScreen() {
                       <Text style={s.progressTxt}>Your Turn</Text>
                     </View>
                   </View>
-
                   <View style={s.statsRow}>
                     <View style={s.statBox}>
                       <Ionicons
@@ -413,18 +537,21 @@ export default function QueueScreen() {
                           ? "Now!"
                           : `~${queue.estimatedWait}m`}
                       </Text>
-                      <Text style={s.statLbl}>Wait Time</Text>
+                      <Text style={s.statLbl}>Wait</Text>
                     </View>
                     <View style={s.statBox}>
                       <Ionicons
-                        name="location-outline"
+                        name="today-outline"
                         size={18}
                         color="#3B82F6"
                       />
-                      <Text style={s.statNum} numberOfLines={1}>
-                        {queue.branch.split("—")[1]?.trim() || "Lab"}
+                      <Text style={s.statNum}>
+                        {nowTime.toLocaleTimeString("en-US", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                       </Text>
-                      <Text style={s.statLbl}>Branch</Text>
+                      <Text style={s.statLbl}>Now</Text>
                     </View>
                   </View>
                 </View>
@@ -447,15 +574,21 @@ export default function QueueScreen() {
                   },
                   {
                     icon: "calendar-outline" as const,
-                    label: "Appointment",
-                    value: `${queue.date} · ${queue.timeSlot}`,
+                    label: "Date",
+                    value: formatBookingDate(queue.date),
                     color: "#A855F7",
+                  },
+                  {
+                    icon: "time-outline" as const,
+                    label: "Time Slot",
+                    value: queue.timeSlot,
+                    color: "#10B981",
                   },
                   {
                     icon: "flask-outline" as const,
                     label: "Tests",
-                    value: queue.tests.join(", "),
-                    color: "#10B981",
+                    value: queue.tests.join(", ") || "Lab Tests",
+                    color: "#F59E0B",
                   },
                 ].map((item, i) => (
                   <View key={i} style={s.detailRow}>
@@ -589,7 +722,7 @@ const s = StyleSheet.create({
     alignItems: "center",
   },
   headerTitle: { fontSize: 18, fontWeight: "800", color: "#fff" },
-  headerSub: { fontSize: 11, color: "#555580", marginTop: 2 },
+  headerSub: { fontSize: 10, color: "#555580", marginTop: 2 },
   refreshBtn: {
     width: 36,
     height: 36,
@@ -597,6 +730,36 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(59,130,246,0.1)",
     justifyContent: "center",
     alignItems: "center",
+  },
+  dateBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 0.5,
+  },
+  dateBannerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+  },
+  dateBannerDate: { fontSize: 13, fontWeight: "800" },
+  dateBannerSlot: { fontSize: 11, color: "#555580", marginTop: 2 },
+  countdownBadge: {
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    alignItems: "center",
+    minWidth: 90,
+  },
+  countdownText: {
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+    textAlign: "center",
   },
   scroll: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 48 },
   statusBadge: {
@@ -642,7 +805,7 @@ const s = StyleSheet.create({
     backgroundColor: BORDER,
     marginHorizontal: 16,
   },
-  progressWrap: { marginBottom: 20 },
+  progressWrap: { marginBottom: 16 },
   progressBg: {
     height: 8,
     backgroundColor: "#1A1A30",
@@ -668,7 +831,7 @@ const s = StyleSheet.create({
     borderColor: BORDER,
   },
   statNum: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "800",
     color: "#fff",
     textAlign: "center",

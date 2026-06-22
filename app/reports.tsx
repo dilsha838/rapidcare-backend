@@ -51,13 +51,12 @@ const STATUS = {
   },
 };
 
-// ── How long ago was the booking? ─────────────────────────────────────────────
 function getReportStatus(dateStr: string): "ready" | "processing" | "pending" {
   try {
-    const bookingDate = new Date(dateStr);
-    const now = new Date();
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    const bookingDate = new Date(y, mo - 1, d);
     const diffHours =
-      (now.getTime() - bookingDate.getTime()) / (1000 * 60 * 60);
+      (new Date().getTime() - bookingDate.getTime()) / (1000 * 60 * 60);
     if (diffHours >= 24) return "ready";
     if (diffHours >= 2) return "processing";
     return "pending";
@@ -68,7 +67,6 @@ function getReportStatus(dateStr: string): "ready" | "processing" | "pending" {
 
 export default function ReportsScreen() {
   const router = useRouter();
-
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -112,71 +110,94 @@ export default function ReportsScreen() {
     ).start();
   }, []);
 
-  // ── Load from AsyncStorage (booking data) ─────────────────────────────────
+  // ✅ Load reports — current user only
   const loadReports = async () => {
     setLoading(true);
     try {
+      // ✅ Get current user email
+      const raw = await AsyncStorage.getItem("user");
+      const user = raw ? JSON.parse(raw) : {};
+      const currentEmail = (user.email || "").toLowerCase();
+
       const allReports: Report[] = [];
 
-      // 1. lastToken
-      const lastToken = await AsyncStorage.getItem("lastToken");
-      if (lastToken) {
-        const t = JSON.parse(lastToken);
-        allReports.push({
-          id: `RPT-${t.orderId || "001"}`,
-          bookingId: t.orderId || "BK001",
-          date: t.date || new Date().toISOString().split("T")[0],
-          tests: t.tests?.map((x: any) => x.name || x) || [],
-          branch: t.branch || "RapidCare Lab",
-          status: getReportStatus(t.date || new Date().toISOString()),
-          totalAmount: t.totalAmount || 0,
-          tokenNumber: t.tokenNumber || 1,
-        });
-      }
+      // ── 1. lastToken ─────────────────────────────────────────────────────
+      const lastTokenStr = await AsyncStorage.getItem("lastToken");
+      if (lastTokenStr) {
+        const t = JSON.parse(lastTokenStr);
+        const tokenEmail = (t.userEmail || "").toLowerCase();
 
-      // 2. bookingData 
-      const bookingData = await AsyncStorage.getItem("bookingData");
-      if (bookingData) {
-        const b = JSON.parse(bookingData);
-       
-        const alreadyAdded = allReports.some(
-          (r) => r.bookingId === (b.orderId || b.bookingId),
-        );
-        if (!alreadyAdded) {
+        // ✅ different user OR cancelled → skip
+        if (
+          (!tokenEmail || tokenEmail === currentEmail) &&
+          t.status !== "cancelled"
+        ) {
+          if (!tokenEmail && currentEmail) {
+            t.userEmail = currentEmail;
+            await AsyncStorage.setItem("lastToken", JSON.stringify(t));
+          }
           allReports.push({
-            id: `RPT-${b.orderId || b.bookingId || "002"}`,
-            bookingId: b.orderId || b.bookingId || "BK002",
-            date: b.date || new Date().toISOString().split("T")[0],
-            tests:
-              b.tests?.map((x: any) => x.name || x) ||
-              b.selectedTests?.map((x: any) => x.name || x) ||
-              [],
-            branch: b.branch || "RapidCare Lab",
-            status: getReportStatus(b.date || new Date().toISOString()),
-            totalAmount: b.totalAmount || 0,
-            tokenNumber: b.tokenNumber || 1,
+            id: `RPT-${t.orderId || "001"}`,
+            bookingId: t.orderId || "BK001",
+            date: t.date || new Date().toISOString().split("T")[0],
+            tests: t.tests?.map((x: any) => x.name || x) || [],
+            branch: t.branch || "RapidCare Lab",
+            status: getReportStatus(t.date || new Date().toISOString()),
+            totalAmount: t.totalAmount || 0,
+            tokenNumber: t.tokenNumber || 1,
           });
         }
       }
+      // ── 2. bookingData ───────────────────────────────────────────────────
+      const bdStr = await AsyncStorage.getItem("bookingData");
+      if (bdStr) {
+        const b = JSON.parse(bdStr);
+        const bdEmail = (b.userEmail || "").toLowerCase();
 
-      // 
-      const upcoming = await AsyncStorage.getItem("upcomingAppointment");
-      if (upcoming) {
-        const u = JSON.parse(upcoming);
-        const alreadyAdded = allReports.some(
-          (r) => r.bookingId === u.bookingId,
-        );
-        if (!alreadyAdded && u.bookingId) {
-          allReports.push({
-            id: `RPT-${u.bookingId}`,
-            bookingId: u.bookingId,
-            date: u.date || new Date().toISOString().split("T")[0],
-            tests: u.tests?.map((x: any) => x.name || x) || [],
-            branch: u.branch || "RapidCare Lab",
-            status: getReportStatus(u.date || new Date().toISOString()),
-            totalAmount: u.totalAmount || 0,
-            tokenNumber: u.tokenNumber || 1,
-          });
+        if (!bdEmail || bdEmail === currentEmail) {
+          const alreadyAdded = allReports.some(
+            (r) => r.bookingId === (b.orderId || b.bookingId),
+          );
+          if (!alreadyAdded) {
+            allReports.push({
+              id: `RPT-${b.orderId || b.bookingId || "002"}`,
+              bookingId: b.orderId || b.bookingId || "BK002",
+              date: b.date || new Date().toISOString().split("T")[0],
+              tests:
+                b.tests?.map((x: any) => x.name || x) ||
+                b.selectedTests?.map((x: any) => x.name || x) ||
+                [],
+              branch: b.branch || "RapidCare Lab",
+              status: getReportStatus(b.date || new Date().toISOString()),
+              totalAmount: b.totalAmount || 0,
+              tokenNumber: b.tokenNumber || 1,
+            });
+          }
+        }
+      }
+
+      // ── 3. upcomingAppointment ───────────────────────────────────────────
+      const upcomingStr = await AsyncStorage.getItem("upcomingAppointment");
+      if (upcomingStr) {
+        const u = JSON.parse(upcomingStr);
+        const uEmail = (u.userEmail || "").toLowerCase();
+
+        if ((!uEmail || uEmail === currentEmail) && u.bookingId) {
+          const alreadyAdded = allReports.some(
+            (r) => r.bookingId === u.bookingId,
+          );
+          if (!alreadyAdded) {
+            allReports.push({
+              id: `RPT-${u.bookingId}`,
+              bookingId: u.bookingId,
+              date: u.date || new Date().toISOString().split("T")[0],
+              tests: u.tests?.map((x: any) => x.name || x) || [],
+              branch: u.branch || "RapidCare Lab",
+              status: getReportStatus(u.date || new Date().toISOString()),
+              totalAmount: u.totalAmount || 0,
+              tokenNumber: u.tokenNumber || 1,
+            });
+          }
         }
       }
 
@@ -195,7 +216,8 @@ export default function ReportsScreen() {
 
   const formatDate = (dateStr: string) => {
     try {
-      return new Date(dateStr).toLocaleDateString("en-US", {
+      const [y, mo, d] = dateStr.split("-").map(Number);
+      return new Date(y, mo - 1, d).toLocaleDateString("en-US", {
         year: "numeric",
         month: "short",
         day: "numeric",
@@ -253,7 +275,7 @@ export default function ReportsScreen() {
   });
 
   // ── No reports ────────────────────────────────────────────────────────────
-  if (!loading && reports.length === 0) {
+  if (!loading && reports.length === 0)
     return (
       <View style={s.root}>
         <StatusBar barStyle="light-content" backgroundColor="#050510" />
@@ -290,12 +312,10 @@ export default function ReportsScreen() {
         </View>
       </View>
     );
-  }
 
   return (
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor="#050510" />
-
       <View style={s.bgAbs} pointerEvents="none">
         <Animated.View style={[s.blobTL, { opacity: glowOpacity }]} />
         <Animated.View style={[s.blobBR, { opacity: glowOpacity }]} />
@@ -416,7 +436,6 @@ export default function ReportsScreen() {
                     style={s.reportTopBar}
                   />
                   <View style={s.reportBody}>
-                    {/* Header */}
                     <View style={s.reportHeaderRow}>
                       <View style={s.reportIconWrap}>
                         <Ionicons
@@ -438,8 +457,6 @@ export default function ReportsScreen() {
                         </Text>
                       </View>
                     </View>
-
-                    {/* Tests */}
                     <View style={s.testsWrap}>
                       {report.tests.length > 0 ? (
                         report.tests.map((test, i) => (
@@ -453,8 +470,6 @@ export default function ReportsScreen() {
                         </Text>
                       )}
                     </View>
-
-                    {/* Details */}
                     <View style={s.detailsRow}>
                       <View style={s.detailItem}>
                         <Ionicons
@@ -491,8 +506,6 @@ export default function ReportsScreen() {
                         </Text>
                       </View>
                     </View>
-
-                    {/* Actions */}
                     <View style={s.actionRow}>
                       <TouchableOpacity
                         style={s.viewBtn}

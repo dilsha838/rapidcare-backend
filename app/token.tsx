@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StatusBar,
-  Dimensions,
   Animated,
   Easing,
 } from "react-native";
@@ -14,8 +13,6 @@ import { useRouter } from "expo-router";
 import { useRef, useEffect, useState } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-
-const { width } = Dimensions.get("window");
 
 interface TokenData {
   tokenNumber: number;
@@ -28,6 +25,7 @@ interface TokenData {
   paidAt: string;
   bookingId?: string;
   status?: string;
+  userEmail?: string;
 }
 
 export default function TokenScreen() {
@@ -35,7 +33,6 @@ export default function TokenScreen() {
   const [token, setToken] = useState<TokenData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -46,66 +43,145 @@ export default function TokenScreen() {
   }, []);
 
   useEffect(() => {
-    if (token) {
-      // Entrance animation
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 600,
-          easing: Easing.out(Easing.cubic),
+    if (!token) return;
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 600,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        friction: 7,
+        tension: 50,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.04,
+          duration: 1400,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
-        Animated.spring(scaleAnim, {
+        Animated.timing(pulseAnim, {
           toValue: 1,
-          friction: 7,
-          tension: 50,
+          duration: 1400,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
-      ]).start();
-
-      // Pulse loop
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.04,
-            duration: 1400,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 1400,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-        ]),
-      ).start();
-
-      // Glow loop
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(glowAnim, {
-            toValue: 1,
-            duration: 2000,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-          Animated.timing(glowAnim, {
-            toValue: 0,
-            duration: 2000,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-        ]),
-      ).start();
-    }
+      ]),
+    ).start();
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(glowAnim, {
+          toValue: 1,
+          duration: 2000,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(glowAnim, {
+          toValue: 0,
+          duration: 2000,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    ).start();
   }, [token]);
 
   const loadToken = async () => {
     try {
-      const data = await AsyncStorage.getItem("lastToken");
-      if (data) setToken(JSON.parse(data));
-    } catch {}
+      const raw = await AsyncStorage.getItem("user");
+      const user = raw ? JSON.parse(raw) : {};
+      const currentEmail = (user.email || "").toLowerCase();
+
+      // ── lastToken ──────────────────────────────────────────────────────
+      const ltStr = await AsyncStorage.getItem("lastToken");
+      if (ltStr) {
+        const t = JSON.parse(ltStr);
+        const tokenEmail = (t.userEmail || "").toLowerCase();
+
+        if (tokenEmail && tokenEmail !== currentEmail) {
+          setToken(null);
+          setLoading(false);
+          return;
+        }
+        if (t.status === "cancelled") {
+          setToken(null);
+          setLoading(false);
+          return;
+        }
+
+        // ✅ Appointment date past වුණාම hide
+        try {
+          const [y, mo, d] = t.date.split("-").map(Number);
+          const apptDate = new Date(y, mo - 1, d);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          if (apptDate < today) {
+            setToken(null);
+            setLoading(false);
+            return;
+          }
+        } catch {}
+
+        if (!tokenEmail && currentEmail) {
+          t.userEmail = currentEmail;
+          await AsyncStorage.setItem("lastToken", JSON.stringify(t));
+        }
+        setToken(t);
+        setLoading(false);
+        return;
+      }
+
+      // ── bookingData fallback ───────────────────────────────────────────
+      const bdStr = await AsyncStorage.getItem("bookingData");
+      if (bdStr) {
+        const b = JSON.parse(bdStr);
+        const bdEmail = (b.userEmail || "").toLowerCase();
+
+        if (bdEmail && bdEmail !== currentEmail) {
+          setToken(null);
+          setLoading(false);
+          return;
+        }
+        if (b.status === "cancelled") {
+          setToken(null);
+          setLoading(false);
+          return;
+        }
+
+        // ✅ Appointment date past වුණාම hide
+        try {
+          const [y, mo, d] = b.date.split("-").map(Number);
+          const apptDate = new Date(y, mo - 1, d);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          if (apptDate < today) {
+            setToken(null);
+            setLoading(false);
+            return;
+          }
+        } catch {}
+
+        setToken({
+          tokenNumber: b.tokenNumber,
+          branch: b.branch,
+          date: b.date,
+          timeSlot: b.timeSlot,
+          tests: b.tests || [],
+          totalAmount: b.totalAmount,
+          orderId: b.bookingId || "BK001",
+          paidAt: new Date().toISOString(),
+          userEmail: bdEmail || currentEmail,
+        });
+      }
+    } catch (e) {
+      console.log("[Token] error:", e);
+    }
     setLoading(false);
   };
 
@@ -114,16 +190,16 @@ export default function TokenScreen() {
     outputRange: [0.3, 0.7],
   });
 
-  // Format date
   const formatDate = (dateStr: string) => {
     try {
-      const d = new Date(dateStr);
+      const [y, mo, d] = dateStr.split("-").map(Number);
+      const date = new Date(y, mo - 1, d);
       const today = new Date();
       const tomorrow = new Date();
       tomorrow.setDate(today.getDate() + 1);
-      if (d.toDateString() === today.toDateString()) return "Today";
-      if (d.toDateString() === tomorrow.toDateString()) return "Tomorrow";
-      return d.toLocaleDateString("en-US", {
+      if (date.toDateString() === today.toDateString()) return "Today";
+      if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
+      return date.toLocaleDateString("en-US", {
         weekday: "long",
         month: "short",
         day: "numeric",
@@ -133,7 +209,6 @@ export default function TokenScreen() {
     }
   };
 
-  // QR grid pattern
   const QRGrid = ({ tokenNum }: { tokenNum: number }) => {
     const seed = tokenNum * 7;
     const filled = (r: number, c: number) =>
@@ -158,8 +233,8 @@ export default function TokenScreen() {
     );
   };
 
-  // ── No token screen ───────────────────────────────────────────────────────
-  if (!loading && !token) {
+  // ── No token ──────────────────────────────────────────────────────────────
+  if (!loading && !token)
     return (
       <View style={s.root}>
         <StatusBar barStyle="light-content" backgroundColor="#050510" />
@@ -167,8 +242,6 @@ export default function TokenScreen() {
           <View style={s.blobTL} />
           <View style={s.blobBR} />
         </View>
-
-        {/* Header */}
         <LinearGradient colors={["#0D0D28", "#131340"]} style={s.header}>
           <View style={s.headerRow}>
             <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
@@ -178,7 +251,6 @@ export default function TokenScreen() {
             <View style={{ width: 36 }} />
           </View>
         </LinearGradient>
-
         <View style={s.emptyWrap}>
           <View style={s.emptyIconWrap}>
             <Ionicons name="qr-code-outline" size={48} color="#1C1C3A" />
@@ -205,20 +277,16 @@ export default function TokenScreen() {
         </View>
       </View>
     );
-  }
 
   // ── Token screen ──────────────────────────────────────────────────────────
   return (
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor="#050510" />
-
-      {/* Bg */}
       <View style={s.bgAbs} pointerEvents="none">
         <Animated.View style={[s.blobTL, { opacity: glowOpacity }]} />
         <Animated.View style={[s.blobBR, { opacity: glowOpacity }]} />
       </View>
 
-      {/* Header */}
       <LinearGradient colors={["#0D0D28", "#131340"]} style={s.header}>
         <View style={s.headerRow}>
           <TouchableOpacity style={s.backBtn} onPress={() => router.back()}>
@@ -244,7 +312,7 @@ export default function TokenScreen() {
               width: "100%",
             }}
           >
-            {/* ── TOKEN CARD ─────────────────────────────────────────── */}
+            {/* TOKEN CARD */}
             <Animated.View
               style={[s.tokenCard, { transform: [{ scale: pulseAnim }] }]}
             >
@@ -252,24 +320,19 @@ export default function TokenScreen() {
                 colors={["#0E0E28", "#131340"]}
                 style={s.tokenCardInner}
               >
-                {/* Top shimmer bar */}
                 <LinearGradient
                   colors={["#3B82F6", "#6366F1", "#A855F7", "#EC4899"]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={s.tokenTopBar}
                 />
-
                 <View style={s.tokenBody}>
-                  {/* Token label + number */}
                   <View style={s.tokenCenter}>
                     <Text style={s.tokenLabel}>YOUR QUEUE TOKEN</Text>
                     <Text style={s.tokenNumber}>
                       #{String(token.tokenNumber).padStart(2, "0")}
                     </Text>
                   </View>
-
-                  {/* QR code */}
                   <View style={s.qrWrap}>
                     <QRGrid tokenNum={token.tokenNumber} />
                   </View>
@@ -281,82 +344,65 @@ export default function TokenScreen() {
                     />{" "}
                     Show this at lab entry
                   </Text>
-
                   <View style={s.tokenDivider} />
-
-                  {/* Booking details */}
                   <View style={s.tokenDetails}>
-                    <View style={s.tokenDetailRow}>
-                      <View style={s.tokenDetailIcon}>
-                        <Ionicons
-                          name="location-outline"
-                          size={14}
-                          color="#3B82F6"
-                        />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.tokenDetailLabel}>Branch</Text>
-                        <Text style={s.tokenDetailValue} numberOfLines={1}>
-                          {token.branch}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={s.tokenDetailRow}>
-                      <View style={s.tokenDetailIcon}>
-                        <Ionicons
-                          name="calendar-outline"
-                          size={14}
-                          color="#A855F7"
-                        />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.tokenDetailLabel}>Appointment</Text>
-                        <Text style={s.tokenDetailValue}>
-                          {formatDate(token.date)} · {token.timeSlot}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={s.tokenDetailRow}>
-                      <View style={s.tokenDetailIcon}>
-                        <Ionicons
-                          name="flask-outline"
-                          size={14}
-                          color="#10B981"
-                        />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.tokenDetailLabel}>Tests</Text>
-                        <Text style={s.tokenDetailValue}>
-                          {token.tests?.map((t) => t.name).join(", ") ||
-                            "Lab Tests"}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={s.tokenDetailRow}>
-                      <View style={s.tokenDetailIcon}>
-                        <Ionicons
-                          name="cash-outline"
-                          size={14}
-                          color="#F59E0B"
-                        />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.tokenDetailLabel}>Amount Paid</Text>
-                        <Text
-                          style={[s.tokenDetailValue, { color: "#10B981" }]}
+                    {[
+                      {
+                        icon: "location-outline" as const,
+                        label: "Branch",
+                        value: `RapidCare ${token.branch}`,
+                        color: "#3B82F6",
+                      },
+                      {
+                        icon: "calendar-outline" as const,
+                        label: "Appointment",
+                        value: `${formatDate(token.date)} · ${token.timeSlot}`,
+                        color: "#A855F7",
+                      },
+                      {
+                        icon: "flask-outline" as const,
+                        label: "Tests",
+                        value:
+                          token.tests?.map((t) => t.name).join(", ") ||
+                          "Lab Tests",
+                        color: "#10B981",
+                      },
+                      {
+                        icon: "cash-outline" as const,
+                        label: "Amount Paid",
+                        value: `Rs. ${token.totalAmount?.toLocaleString()} ✓`,
+                        color: "#F59E0B",
+                        green: true,
+                      },
+                    ].map((item, i) => (
+                      <View key={i} style={s.tokenDetailRow}>
+                        <View
+                          style={[
+                            s.tokenDetailIcon,
+                            { backgroundColor: `${item.color}15` },
+                          ]}
                         >
-                          Rs. {token.totalAmount?.toLocaleString()} ✓
-                        </Text>
+                          <Ionicons
+                            name={item.icon}
+                            size={14}
+                            color={item.color}
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.tokenDetailLabel}>{item.label}</Text>
+                          <Text
+                            style={[
+                              s.tokenDetailValue,
+                              (item as any).green && { color: "#10B981" },
+                            ]}
+                          >
+                            {item.value}
+                          </Text>
+                        </View>
                       </View>
-                    </View>
+                    ))}
                   </View>
-
                   <View style={s.tokenDivider} />
-
-                  {/* Order ID */}
                   <View style={s.orderIdRow}>
                     <Text style={s.orderIdLabel}>Order ID</Text>
                     <Text style={s.orderIdValue}>{token.orderId}</Text>
@@ -365,7 +411,7 @@ export default function TokenScreen() {
               </LinearGradient>
             </Animated.View>
 
-            {/* ── INSTRUCTIONS ──────────────────────────────────────── */}
+            {/* INSTRUCTIONS */}
             <View style={s.instructionsCard}>
               <LinearGradient
                 colors={["#0C0C22", "#0E0E28"]}
@@ -416,7 +462,7 @@ export default function TokenScreen() {
               </LinearGradient>
             </View>
 
-            {/* ── ACTIONS ───────────────────────────────────────────── */}
+            {/* ACTIONS */}
             <View style={s.actions}>
               <TouchableOpacity
                 style={s.actionBtn}
@@ -433,7 +479,6 @@ export default function TokenScreen() {
                   <Text style={s.actionBtnText}>Back to Home</Text>
                 </LinearGradient>
               </TouchableOpacity>
-
               <TouchableOpacity
                 style={s.actionBtnOutline}
                 onPress={() => router.push("/payment")}
@@ -450,7 +495,6 @@ export default function TokenScreen() {
   );
 }
 
-// ─── STYLES ──────────────────────────────────────────────────────────────────
 const BORDER = "#1C1C3A";
 
 const st = StyleSheet.create({
@@ -500,7 +544,6 @@ const s = StyleSheet.create({
     right: -50,
   },
 
-  // Header
   header: {
     paddingTop: 52,
     paddingHorizontal: 16,
@@ -539,7 +582,6 @@ const s = StyleSheet.create({
   },
   headerBadgeText: { fontSize: 11, color: "#10B981", fontWeight: "600" },
 
-  // Token card
   tokenCard: {
     width: "100%",
     borderRadius: 26,
@@ -585,7 +627,6 @@ const s = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 10,
-    backgroundColor: "rgba(59,130,246,0.1)",
     justifyContent: "center",
     alignItems: "center",
     flexShrink: 0,
@@ -606,7 +647,6 @@ const s = StyleSheet.create({
   orderIdLabel: { fontSize: 11, color: "#555580" },
   orderIdValue: { fontSize: 11, color: "#3B82F6", fontWeight: "600" },
 
-  // Instructions
   instructionsCard: {
     width: "100%",
     borderRadius: 20,
@@ -644,7 +684,6 @@ const s = StyleSheet.create({
     paddingTop: 7,
   },
 
-  // Actions
   actions: { width: "100%", gap: 10 },
   actionBtn: { borderRadius: 16, overflow: "hidden" },
   actionBtnGrad: {
@@ -668,7 +707,6 @@ const s = StyleSheet.create({
   },
   actionBtnOutlineText: { fontSize: 15, fontWeight: "700", color: "#3B82F6" },
 
-  // Empty state
   emptyWrap: {
     flex: 1,
     justifyContent: "center",

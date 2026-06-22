@@ -11,7 +11,6 @@ import {
   Easing,
   ActivityIndicator,
   Alert,
-  FlatList,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -20,10 +19,9 @@ import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const { width } = Dimensions.get("window");
-const API_BASE =
-  "http://https://rapidcare-backend-production.up.railway.app:5000";
+const API_BASE = "https://rapidcare-backend-production.up.railway.app";
+const MAX_TESTS = 5;
 
-// ─── TYPES ────────────────────────────────────────────────────────────────────
 interface Test {
   id: number;
   name: string;
@@ -35,11 +33,9 @@ interface Test {
   description: string;
   popular: boolean;
 }
-
 interface CartItem extends Test {
   quantity: number;
 }
-
 
 const FALLBACK_TESTS: Test[] = [
   {
@@ -177,7 +173,6 @@ const FALLBACK_TESTS: Test[] = [
 ];
 
 const CATEGORIES = ["All", "Blood", "Urine", "Hormone", "Cardiac"];
-
 const CATEGORY_ICONS: Record<string, string> = {
   All: "apps",
   Blood: "water",
@@ -186,7 +181,26 @@ const CATEGORY_ICONS: Record<string, string> = {
   Cardiac: "heart",
 };
 
-// ─── COMPONENT ────────────────────────────────────────────────────────────────
+function getNext7Days() {
+  const days = [];
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+function formatShortDate(d: Date) {
+  return d.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+function formatDateKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export default function BloodTestBooking() {
   const router = useRouter();
 
@@ -198,15 +212,19 @@ export default function BloodTestBooking() {
   const [loading, setLoading] = useState(true);
   const [showCart, setShowCart] = useState(false);
   const [showPopular, setShowPopular] = useState(true);
+  const [selectedDate, setSelectedDate] = useState<Date>(getNext7Days()[0]);
 
-  // Animations
+  const NEXT_7 = getNext7Days();
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const cartAnim = useRef(new Animated.Value(0)).current;
   const cartSlide = useRef(new Animated.Value(300)).current;
   const headerAnim = useRef(new Animated.Value(-20)).current;
 
+  // ✅ Restore cart + date when coming back from booking-confirm
   useEffect(() => {
     loadTests();
+    restoreCart();
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -223,7 +241,26 @@ export default function BloodTestBooking() {
     ]).start();
   }, []);
 
-  // Animate cart panel
+  const restoreCart = async () => {
+    try {
+      const cartRaw = await AsyncStorage.getItem("cartItems");
+      const dateRaw = await AsyncStorage.getItem("selectedDate");
+      if (cartRaw) {
+        const saved = JSON.parse(cartRaw);
+        setCart(saved);
+      }
+      if (dateRaw) {
+        const [y, mo, d] = dateRaw.split("-").map(Number);
+        const restored = new Date(y, mo - 1, d);
+        // Only restore if it's a future date
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(0, 0, 0, 0);
+        if (restored >= tomorrow) setSelectedDate(restored);
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     if (showCart) {
       Animated.parallel([
@@ -255,43 +292,34 @@ export default function BloodTestBooking() {
     }
   }, [showCart]);
 
-  // ── Load tests from backend ─────────────────────────────────────────────
   const loadTests = async () => {
     try {
-      const token = await AsyncStorage.getItem("authToken");
-      const res = await fetch(`${API_BASE}/tests`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(`${API_BASE}/tests`);
       if (res.ok) {
         const data = await res.json();
-        setTests(data);
-        setFiltered(data);
-      } else {
-        // Use fallback
-        setTests(FALLBACK_TESTS);
-        setFiltered(FALLBACK_TESTS);
+        if (data.length > 0) {
+          setTests(data);
+          setFiltered(data);
+          setLoading(false);
+          return;
+        }
       }
-    } catch {
-      // Backend down — use static data
-      setTests(FALLBACK_TESTS);
-      setFiltered(FALLBACK_TESTS);
-    } finally {
-      setLoading(false);
-    }
+    } catch {}
+    setTests(FALLBACK_TESTS);
+    setFiltered(FALLBACK_TESTS);
+    setLoading(false);
   };
 
-  // ── Search + Filter ─────────────────────────────────────────────────────
   const applyFilter = useCallback(
     (searchText: string, cat: string) => {
       let result = tests;
       if (cat !== "All") result = result.filter((t) => t.category === cat);
-      if (searchText.trim()) {
+      if (searchText.trim())
         result = result.filter(
           (t) =>
             t.name.toLowerCase().includes(searchText.toLowerCase()) ||
             t.category.toLowerCase().includes(searchText.toLowerCase()),
         );
-      }
       setFiltered(result);
     },
     [tests],
@@ -301,49 +329,71 @@ export default function BloodTestBooking() {
     setSearch(text);
     applyFilter(text, category);
   };
-
   const handleCategory = (cat: string) => {
     setCategory(cat);
     applyFilter(search, cat);
   };
 
-  // ── Cart ────────────────────────────────────────────────────────────────
   const isInCart = (id: number) => cart.some((c) => c.id === id);
 
   const addToCart = (test: Test) => {
     if (isInCart(test.id)) {
-      setCart((prev) => prev.filter((c) => c.id !== test.id));
+      const updated = cart.filter((c) => c.id !== test.id);
+      setCart(updated);
+      AsyncStorage.setItem("cartItems", JSON.stringify(updated));
     } else {
-      setCart((prev) => [...prev, { ...test, quantity: 1 }]);
+      if (cart.length >= MAX_TESTS) {
+        Alert.alert(
+          "Maximum Reached",
+          `Maximum ${MAX_TESTS} tests select කරන්න පුළුවන්.`,
+        );
+        return;
+      }
+      const updated = [...cart, { ...test, quantity: 1 }];
+      setCart(updated);
+      AsyncStorage.setItem("cartItems", JSON.stringify(updated));
     }
   };
 
-  const removeFromCart = (id: number) =>
-    setCart((prev) => prev.filter((c) => c.id !== id));
+  const removeFromCart = (id: number) => {
+    const updated = cart.filter((c) => c.id !== id);
+    setCart(updated);
+    AsyncStorage.setItem("cartItems", JSON.stringify(updated));
+  };
+
+  const clearCart = () => {
+    setCart([]);
+    AsyncStorage.removeItem("cartItems");
+  };
+
+  const handleDateSelect = (d: Date) => {
+    setSelectedDate(d);
+    AsyncStorage.setItem("selectedDate", formatDateKey(d));
+  };
 
   const cartTotal = cart.reduce((sum, c) => sum + c.price, 0);
   const cartCount = cart.length;
 
-  // ── Proceed to booking ──────────────────────────────────────────────────
+  // ✅ Save everything and navigate
   const handleProceed = async () => {
     if (cart.length === 0) {
-      Alert.alert("Empty Cart", "Tests select .");
+      Alert.alert("Empty Cart", "Tests select කරන්න.");
       return;
     }
     await AsyncStorage.setItem("cartItems", JSON.stringify(cart));
+    await AsyncStorage.setItem("selectedDate", formatDateKey(selectedDate));
     setShowCart(false);
     router.push("/booking-confirm");
   };
 
   const popularTests = tests.filter((t) => t.popular);
 
-  // ─── RENDER TEST CARD ────────────────────────────────────────────────────
   const renderTestCard = (item: Test) => {
     const inCart = isInCart(item.id);
+    const canAdd = !inCart && cart.length >= MAX_TESTS;
     return (
       <Animated.View key={item.id} style={[s.testCard, { opacity: fadeAnim }]}>
         <View style={s.testCardInner}>
-          {/* Left info */}
           <View style={s.testLeft}>
             <View style={s.testIconWrap}>
               <Ionicons
@@ -375,19 +425,22 @@ export default function BloodTestBooking() {
               </View>
             </View>
           </View>
-
-          {/* Right */}
           <View style={s.testRight}>
             <Text style={s.testPrice}>Rs. {item.price.toLocaleString()}</Text>
             <TouchableOpacity
-              style={[s.addBtn, inCart && s.addBtnActive]}
+              style={[
+                s.addBtn,
+                inCart && s.addBtnActive,
+                canAdd && s.addBtnDisabled,
+              ]}
               onPress={() => addToCart(item)}
               activeOpacity={0.8}
+              disabled={canAdd}
             >
               <Ionicons
                 name={inCart ? "checkmark" : "add"}
                 size={16}
-                color={inCart ? "#fff" : "#3B82F6"}
+                color={inCart ? "#fff" : canAdd ? "#333355" : "#3B82F6"}
               />
             </TouchableOpacity>
           </View>
@@ -396,18 +449,15 @@ export default function BloodTestBooking() {
     );
   };
 
-  // ─── RENDER ──────────────────────────────────────────────────────────────
   return (
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor="#050510" />
-
-      {/* Bg */}
       <View style={s.bgAbs} pointerEvents="none">
         <View style={s.blobTL} />
         <View style={s.blobBR} />
       </View>
 
-      {/* ── HEADER ─────────────────────────────────────────────────────── */}
+      {/* HEADER */}
       <Animated.View
         style={{ transform: [{ translateY: headerAnim }], opacity: fadeAnim }}
       >
@@ -420,7 +470,6 @@ export default function BloodTestBooking() {
               <Text style={s.headerTitle}>Lab Test Booking</Text>
               <Text style={s.headerSub}>{tests.length} tests available</Text>
             </View>
-            {/* Cart button */}
             <TouchableOpacity
               style={s.cartBtn}
               onPress={() => setShowCart(true)}
@@ -433,8 +482,6 @@ export default function BloodTestBooking() {
               )}
             </TouchableOpacity>
           </View>
-
-          {/* Search */}
           <View style={s.searchBar}>
             <Ionicons name="search-outline" size={16} color="#555580" />
             <TextInput
@@ -453,7 +500,57 @@ export default function BloodTestBooking() {
         </LinearGradient>
       </Animated.View>
 
-      {/* ── CATEGORY PILLS ─────────────────────────────────────────────── */}
+      {/* DATE PICKER */}
+      <View style={s.dateSectionWrap}>
+        <View style={s.dateLabelRow}>
+          <Ionicons name="calendar-outline" size={14} color="#3B82F6" />
+          <Text style={s.dateLabel}>Select Appointment Date</Text>
+        </View>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={s.dateScroll}
+        >
+          {NEXT_7.map((d, i) => {
+            const isSelected = formatDateKey(d) === formatDateKey(selectedDate);
+            return (
+              <TouchableOpacity
+                key={i}
+                style={[s.dateChip, isSelected && s.dateChipActive]}
+                onPress={() => handleDateSelect(d)}
+                activeOpacity={0.85}
+              >
+                <Text
+                  style={[s.dateChipDay, isSelected && s.dateChipTextActive]}
+                >
+                  {d.toLocaleDateString("en-US", { weekday: "short" })}
+                </Text>
+                <Text
+                  style={[s.dateChipNum, isSelected && s.dateChipTextActive]}
+                >
+                  {d.getDate()}
+                </Text>
+                <Text style={[s.dateChipMon, isSelected && { color: "#fff" }]}>
+                  {d.toLocaleDateString("en-US", { month: "short" })}
+                </Text>
+                {i === 0 && !isSelected && <View style={s.todayDot} />}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* MAX TESTS BANNER */}
+      {cartCount >= MAX_TESTS && (
+        <View style={s.maxBanner}>
+          <Ionicons name="information-circle" size={14} color="#F59E0B" />
+          <Text style={s.maxBannerText}>
+            Maximum {MAX_TESTS} tests selected
+          </Text>
+        </View>
+      )}
+
+      {/* CATEGORY PILLS */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -478,7 +575,7 @@ export default function BloodTestBooking() {
         ))}
       </ScrollView>
 
-      {/* ── CONTENT ────────────────────────────────────────────────────── */}
+      {/* TESTS LIST */}
       {loading ? (
         <View style={s.loadingWrap}>
           <ActivityIndicator color="#3B82F6" size="large" />
@@ -488,9 +585,8 @@ export default function BloodTestBooking() {
         <ScrollView
           style={s.listScroll}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 120 }}
+          contentContainerStyle={{ paddingBottom: 130 }}
         >
-          {/* Popular section */}
           {category === "All" && search === "" && (
             <View style={s.section}>
               <TouchableOpacity
@@ -515,8 +611,6 @@ export default function BloodTestBooking() {
               {showPopular && popularTests.map(renderTestCard)}
             </View>
           )}
-
-          {/* All / filtered tests */}
           <View style={s.section}>
             <View style={s.sectionHeader}>
               <View style={s.sectionLeft}>
@@ -540,12 +634,10 @@ export default function BloodTestBooking() {
                 </View>
               </View>
             </View>
-
             {filtered.length === 0 ? (
               <View style={s.emptyWrap}>
                 <Ionicons name="search-outline" size={40} color="#1C1C3A" />
                 <Text style={s.emptyText}>No tests found</Text>
-                <Text style={s.emptySub}>Try a different search term</Text>
               </View>
             ) : (
               filtered.map(renderTestCard)
@@ -554,7 +646,7 @@ export default function BloodTestBooking() {
         </ScrollView>
       )}
 
-      {/* ── STICKY CART SUMMARY BAR ─────────────────────────────────────── */}
+      {/* CART BAR */}
       {cartCount > 0 && !showCart && (
         <Animated.View style={[s.cartBar, { opacity: fadeAnim }]}>
           <TouchableOpacity
@@ -570,10 +662,13 @@ export default function BloodTestBooking() {
             >
               <View style={s.cartBarLeft}>
                 <View style={s.cartBarBadge}>
-                  <Text style={s.cartBarBadgeText}>{cartCount}</Text>
+                  <Text style={s.cartBarBadgeText}>
+                    {cartCount}/{MAX_TESTS}
+                  </Text>
                 </View>
                 <Text style={s.cartBarLabel}>
-                  {cartCount} test{cartCount > 1 ? "s" : ""} selected
+                  {cartCount} test{cartCount > 1 ? "s" : ""} ·{" "}
+                  {formatShortDate(selectedDate)}
                 </Text>
               </View>
               <View style={s.cartBarRight}>
@@ -587,7 +682,7 @@ export default function BloodTestBooking() {
         </Animated.View>
       )}
 
-      {/* ── CART PANEL (Bottom Sheet) ───────────────────────────────────── */}
+      {/* CART PANEL */}
       {showCart && (
         <Animated.View style={[s.cartOverlay, { opacity: cartAnim }]}>
           <TouchableOpacity
@@ -601,18 +696,29 @@ export default function BloodTestBooking() {
               colors={["#0E0E28", "#0A0A1E"]}
               style={s.cartSheetInner}
             >
-              {/* Handle */}
               <View style={s.cartHandle} />
               <View style={s.cartSheetHeader}>
-                <Text style={s.cartSheetTitle}>Selected Tests</Text>
+                <Text style={s.cartSheetTitle}>
+                  Selected Tests ({cartCount}/{MAX_TESTS})
+                </Text>
                 <TouchableOpacity onPress={() => setShowCart(false)}>
                   <Ionicons name="close" size={22} color="#555580" />
                 </TouchableOpacity>
               </View>
 
-              {/* Cart items */}
+              {/* Selected date in cart */}
+              <View style={s.cartDateRow}>
+                <Ionicons name="calendar-outline" size={14} color="#3B82F6" />
+                <Text style={s.cartDateText}>
+                  {formatShortDate(selectedDate)}
+                </Text>
+                <TouchableOpacity onPress={() => setShowCart(false)}>
+                  <Text style={s.cartDateChange}>Change Date</Text>
+                </TouchableOpacity>
+              </View>
+
               <ScrollView
-                style={{ maxHeight: 260 }}
+                style={{ maxHeight: 220 }}
                 showsVerticalScrollIndicator={false}
               >
                 {cart.map((item) => (
@@ -645,7 +751,6 @@ export default function BloodTestBooking() {
                 ))}
               </ScrollView>
 
-              {/* Total */}
               <View style={s.cartTotalRow}>
                 <View>
                   <Text style={s.cartTotalLabel}>
@@ -655,12 +760,11 @@ export default function BloodTestBooking() {
                     Rs. {cartTotal.toLocaleString()}
                   </Text>
                 </View>
-                <TouchableOpacity onPress={() => setCart([])}>
+                <TouchableOpacity onPress={clearCart}>
                   <Text style={s.clearCartText}>Clear all</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Proceed button */}
               <TouchableOpacity
                 style={s.proceedBtn}
                 onPress={handleProceed}
@@ -672,7 +776,10 @@ export default function BloodTestBooking() {
                   end={{ x: 1, y: 0 }}
                   style={s.proceedGrad}
                 >
-                  <Text style={s.proceedText}>Proceed to Booking →</Text>
+                  <Ionicons name="calendar-outline" size={16} color="#fff" />
+                  <Text style={s.proceedText}>
+                    Book for {formatShortDate(selectedDate)} →
+                  </Text>
                 </LinearGradient>
               </TouchableOpacity>
             </LinearGradient>
@@ -683,14 +790,10 @@ export default function BloodTestBooking() {
   );
 }
 
-// ─── STYLES ──────────────────────────────────────────────────────────────────
 const CARD_BG = "#0E0E24";
 const BORDER = "#1C1C3A";
-
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#050510" },
-
-  // Bg
   bgAbs: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
   blobTL: {
     position: "absolute",
@@ -711,7 +814,6 @@ const s = StyleSheet.create({
     right: -40,
   },
 
-  // Header
   header: {
     paddingTop: 52,
     paddingHorizontal: 16,
@@ -766,8 +868,6 @@ const s = StyleSheet.create({
     borderColor: "#050510",
   },
   cartBadgeText: { fontSize: 9, fontWeight: "800", color: "#fff" },
-
-  // Search
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -781,7 +881,63 @@ const s = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 14, color: "#fff" },
 
-  // Categories
+  dateSectionWrap: { paddingTop: 12, paddingBottom: 4 },
+  dateLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  dateLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#555580",
+    letterSpacing: 0.3,
+  },
+  dateScroll: { paddingHorizontal: 16, gap: 8 },
+  dateChip: {
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: CARD_BG,
+    borderWidth: 1,
+    borderColor: BORDER,
+    minWidth: 56,
+    position: "relative",
+  },
+  dateChipActive: { backgroundColor: "#3B82F6", borderColor: "#3B82F6" },
+  dateChipDay: { fontSize: 10, color: "#555580", fontWeight: "600" },
+  dateChipNum: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#fff",
+    lineHeight: 22,
+  },
+  dateChipMon: { fontSize: 9, color: "#555580" },
+  dateChipTextActive: { color: "#fff" },
+  todayDot: {
+    position: "absolute",
+    bottom: 4,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#3B82F6",
+  },
+
+  maxBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(245,158,11,0.1)",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 0.5,
+    borderBottomColor: "rgba(245,158,11,0.2)",
+  },
+  maxBannerText: { fontSize: 12, color: "#F59E0B", fontWeight: "600" },
+
   catScroll: { maxHeight: 54, flexGrow: 0 },
   catContent: { paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
   catPill: {
@@ -799,7 +955,6 @@ const s = StyleSheet.create({
   catText: { fontSize: 12, color: "#555580" },
   catTextActive: { color: "#fff", fontWeight: "600" },
 
-  // Loading
   loadingWrap: {
     flex: 1,
     justifyContent: "center",
@@ -807,8 +962,6 @@ const s = StyleSheet.create({
     gap: 12,
   },
   loadingText: { fontSize: 14, color: "#555580" },
-
-  // List
   listScroll: { flex: 1 },
   section: { paddingHorizontal: 16, paddingTop: 16 },
   sectionHeader: {
@@ -833,7 +986,6 @@ const s = StyleSheet.create({
   },
   sectionBadgeText: { fontSize: 11, color: "#3B82F6", fontWeight: "700" },
 
-  // Test card
   testCard: { marginBottom: 10 },
   testCardInner: {
     flexDirection: "row",
@@ -880,13 +1032,11 @@ const s = StyleSheet.create({
     borderColor: "#1C3A5A",
   },
   addBtnActive: { backgroundColor: "#3B82F6", borderColor: "#3B82F6" },
+  addBtnDisabled: { backgroundColor: "#0E0E24", borderColor: "#1C1C3A" },
 
-  // Empty
   emptyWrap: { alignItems: "center", paddingTop: 48, gap: 8 },
   emptyText: { fontSize: 16, fontWeight: "700", color: "#333358" },
-  emptySub: { fontSize: 13, color: "#222240" },
 
-  // Cart bar
   cartBar: { position: "absolute", bottom: 20, left: 16, right: 16 },
   cartBarInner: { borderRadius: 18, overflow: "hidden" },
   cartBarGrad: {
@@ -898,19 +1048,18 @@ const s = StyleSheet.create({
   },
   cartBarLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   cartBarBadge: {
-    width: 26,
+    width: 36,
     height: 26,
     borderRadius: 8,
     backgroundColor: "rgba(255,255,255,0.2)",
     justifyContent: "center",
     alignItems: "center",
   },
-  cartBarBadgeText: { fontSize: 12, fontWeight: "800", color: "#fff" },
-  cartBarLabel: { fontSize: 14, fontWeight: "600", color: "#fff" },
+  cartBarBadgeText: { fontSize: 11, fontWeight: "800", color: "#fff" },
+  cartBarLabel: { fontSize: 13, fontWeight: "600", color: "#fff" },
   cartBarRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   cartBarTotal: { fontSize: 16, fontWeight: "800", color: "#fff" },
 
-  // Cart overlay
   cartOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-end",
@@ -935,9 +1084,22 @@ const s = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 10,
   },
   cartSheetTitle: { fontSize: 18, fontWeight: "800", color: "#fff" },
+  cartDateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(59,130,246,0.08)",
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 12,
+    borderWidth: 0.5,
+    borderColor: "rgba(59,130,246,0.2)",
+  },
+  cartDateText: { flex: 1, fontSize: 13, fontWeight: "700", color: "#3B82F6" },
+  cartDateChange: { fontSize: 11, color: "#555580", fontWeight: "600" },
   cartItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -973,9 +1135,15 @@ const s = StyleSheet.create({
   },
   clearCartText: { fontSize: 12, color: "#EF4444", fontWeight: "600" },
   proceedBtn: { borderRadius: 18, overflow: "hidden" },
-  proceedGrad: { height: 56, justifyContent: "center", alignItems: "center" },
+  proceedGrad: {
+    height: 56,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+  },
   proceedText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "800",
     color: "#fff",
     letterSpacing: 0.3,
