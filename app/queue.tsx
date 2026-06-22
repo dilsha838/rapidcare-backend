@@ -29,13 +29,11 @@ interface QueueData {
   tests: string[];
 }
 
-// ✅ LOCAL today string
 function localToday(): string {
   const n = new Date();
   return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
 }
 
-// ✅ Parse "7:00 AM" + "2026-06-05" → Date (local)
 function parseSlotDateTime(timeSlot: string, dateStr: string): Date {
   try {
     const [time, period] = timeSlot.trim().split(" ");
@@ -45,8 +43,7 @@ function parseSlotDateTime(timeSlot: string, dateStr: string): Date {
     if (period === "PM" && hour !== 12) hour += 12;
     if (period === "AM" && hour === 12) hour = 0;
     const [y, mo, d] = dateStr.split("-").map(Number);
-    const dt = new Date(y, mo - 1, d, hour, min, 0, 0);
-    return dt;
+    return new Date(y, mo - 1, d, hour, min, 0, 0);
   } catch {
     return new Date();
   }
@@ -245,7 +242,12 @@ export default function QueueScreen() {
   const loadQueue = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      // ✅ Check both lastToken AND bookingData
+      // ✅ Get current logged-in user email
+      const userRaw = await AsyncStorage.getItem("user");
+      const currentUser = userRaw ? JSON.parse(userRaw) : {};
+      const currentEmail = (currentUser.email || "").toLowerCase();
+
+      // ✅ Check lastToken
       let tokenData = await AsyncStorage.getItem("lastToken");
       if (!tokenData) tokenData = await AsyncStorage.getItem("bookingData");
 
@@ -256,19 +258,51 @@ export default function QueueScreen() {
         return;
       }
 
-      setHasToken(true);
       const parsed = JSON.parse(tokenData);
+      const tokenEmail = (parsed?.userEmail || "").toLowerCase();
+
+      // ✅ Different user → don't show
+      if (tokenEmail && currentEmail && tokenEmail !== currentEmail) {
+        console.log("[Queue] different user token → skip");
+        setHasToken(false);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      // ✅ Cancelled → don't show
+      if (parsed?.status === "cancelled") {
+        console.log("[Queue] cancelled token → skip");
+        setHasToken(false);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      // ✅ Past appointment → don't show in queue (token page handles this)
+      const dateStr = parsed?.date || localToday();
+      try {
+        const [y, mo, d] = dateStr.split("-").map(Number);
+        const apptDate = new Date(y, mo - 1, d);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        if (apptDate < today) {
+          console.log("[Queue] past appointment → skip");
+          setHasToken(false);
+          setLoading(false);
+          setRefreshing(false);
+          return;
+        }
+      } catch {}
+
+      setHasToken(true);
       const branch = parsed?.branch || "RapidCare Lab";
-      // ✅ Use local date — no UTC shift
-      const date = parsed?.date || localToday();
       const timeSlot = parsed?.timeSlot || "7:00 AM";
       const myNumber = parsed?.tokenNumber || 1;
 
-      console.log("[Queue] token:", myNumber, "date:", date, "branch:", branch);
-
       try {
         const res = await fetch(
-          `${API_BASE}/queue/status?branch=${encodeURIComponent(branch)}&date=${date}`,
+          `${API_BASE}/queue/status?branch=${encodeURIComponent(branch)}&date=${dateStr}`,
         );
         if (res.ok) {
           const serverData = await res.json();
@@ -279,10 +313,10 @@ export default function QueueScreen() {
             myNumber,
             peopleAhead,
             estimatedWait: peopleAhead * 8,
-            status: calcStatus(myNumber, currentNumber, timeSlot, date),
+            status: calcStatus(myNumber, currentNumber, timeSlot, dateStr),
             branch,
             timeSlot,
-            date,
+            date: dateStr,
             tests: parsed?.tests?.map((t: any) => t.name) || [],
           });
         } else {
@@ -303,7 +337,6 @@ export default function QueueScreen() {
     setRefreshing(true);
     loadQueue(true);
   }, []);
-
   const glowOpacity = glowAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0.3, 0.8],
@@ -358,7 +391,6 @@ export default function QueueScreen() {
         <Animated.View style={[s.blobBR, { opacity: glowOpacity }]} />
       </View>
 
-      {/* Header */}
       <Animated.View
         style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}
       >
