@@ -115,7 +115,7 @@ export default function TokenScreen() {
           return;
         }
 
-        // ✅ Appointment date past වුණාම hide
+        // ✅ Appointment 
         try {
           const [y, mo, d] = t.date.split("-").map(Number);
           const apptDate = new Date(y, mo - 1, d);
@@ -154,7 +154,7 @@ export default function TokenScreen() {
           return;
         }
 
-        // ✅ Appointment date past වුණාම hide
+        // ✅ Appointment date past check
         try {
           const [y, mo, d] = b.date.split("-").map(Number);
           const apptDate = new Date(y, mo - 1, d);

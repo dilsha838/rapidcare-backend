@@ -225,7 +225,7 @@ export default function Payment() {
   // ── Payment ──────────────────────────────────────────────────────────────
   const handlePayment = async () => {
     if (!tokenData) {
-      Alert.alert("No Booking", "Booking data නොමැත. Book a test first.");
+      Alert.alert("No Booking", "Booking data not found. Book a test first.");
       return;
     }
     setLoading(true);
@@ -276,7 +276,7 @@ export default function Payment() {
   // ── Cancel booking ────────────────────────────────────────────────────────
   const handleCancel = (booking: Booking) => {
     const bookingId = booking.id || booking.bookingId || booking.order_id;
-    Alert.alert("Cancel Booking", "ඔයාගේ booking cancel කරන්නද?", [
+    Alert.alert("Cancel Booking", "Are you sure you want to cancel this booking?", [
       { text: "No", style: "cancel" },
       {
         text: "Yes, Cancel",
@@ -305,7 +305,7 @@ export default function Payment() {
               }
             }
           } catch {
-            Alert.alert("Error", "Cancel කරන්න බැරි වුණා.");
+            Alert.alert("Error", "Failed to cancel the booking.");
           }
         },
       },

@@ -222,17 +222,17 @@ export default function Login() {
   // ── Manual login ──────────────────────────────────────────────────────────
   const validate = (): boolean => {
     if (!email.trim()) {
-      setError("Email enter කරන්න.");
+      setError("Email enter.");
       shake();
       return false;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setError("Valid email enter කරන්න.");
+      setError("Valid email enter.");
       shake();
       return false;
     }
     if (!password) {
-      setError("Password enter කරන්න.");
+      setError("Password enter.");
       shake();
       return false;
     }
