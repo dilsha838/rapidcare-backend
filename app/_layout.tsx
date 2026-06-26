@@ -48,10 +48,17 @@ export default function RootLayout() {
     );
   }
 
+  if (!isLoggedIn) {
+    return (
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="login" />
+        <Stack.Screen name="signup" />
+      </Stack>
+    );
+  }
+
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="login" />
-      <Stack.Screen name="signup" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="payment" />
       <Stack.Screen name="token" />

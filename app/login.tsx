@@ -35,8 +35,8 @@ export default function Login() {
   const [focused, setFocused] = useState<"email" | "pass" | null>(null);
   const [hasBiometric, setHasBiometric] = useState(false);
   const [savedEmail, setSavedEmail] = useState<string | null>(null);
+  const [bioChecked, setBioChecked] = useState(false);
 
-  // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const logoSlide = useRef(new Animated.Value(-30)).current;
   const cardSlide = useRef(new Animated.Value(60)).current;
@@ -45,14 +45,12 @@ export default function Login() {
   const bioAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    checkBiometric();
     startAnimations();
+    checkBiometricAndAutoPrompt();
   }, []);
 
-  // ── Check biometric availability ─────────────────────────────────────────
-  // NOTE: _layout.tsx already handles auto-login redirect
-  // This page only shows if user is NOT logged in
-  const checkBiometric = async () => {
+  // ✅ Check biometric — if available, auto-prompt
+  const checkBiometricAndAutoPrompt = async () => {
     try {
       const compatible = await LocalAuthentication.hasHardwareAsync();
       const enrolled = await LocalAuthentication.isEnrolledAsync();
@@ -62,8 +60,65 @@ export default function Login() {
       if (compatible && enrolled && hasSaved && hasSavedPwd) {
         setHasBiometric(true);
         setSavedEmail(hasSaved);
+        setBioChecked(true);
+        // ✅ Auto-prompt fingerprint after short delay
+        setTimeout(() => {
+          handleBiometricLoginAuto(hasSaved, hasSavedPwd);
+        }, 800);
+      } else {
+        setBioChecked(true);
       }
+    } catch {
+      setBioChecked(true);
+    }
+  };
+
+  // ✅ Auto fingerprint prompt (called on page load)
+  const handleBiometricLoginAuto = async (
+    savedMail: string,
+    savedPwd: string,
+  ) => {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: "Sign in to RapidCare",
+        fallbackLabel: "Use Password",
+        cancelLabel: "Cancel",
+        disableDeviceFallback: false,
+      });
+      if (result.success) {
+        setLoading(true);
+        await performLogin(savedMail, savedPwd);
+      }
+      // If cancelled or failed — just show login form normally
     } catch {}
+  };
+
+  // ✅ Manual fingerprint button press
+  const handleBiometricLogin = async () => {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: "Use fingerprint to sign in",
+        fallbackLabel: "Use Password",
+        cancelLabel: "Cancel",
+        disableDeviceFallback: false,
+      });
+      if (result.success) {
+        const savedPwd = await AsyncStorage.getItem("savedPassword");
+        const savedMail = await AsyncStorage.getItem("savedEmail");
+        if (!savedMail || !savedPwd) {
+          setError("Saved credentials not found. Please login with password.");
+          return;
+        }
+        setLoading(true);
+        await performLogin(savedMail, savedPwd);
+      } else if ((result as any).error !== "user_cancel") {
+        setError("Fingerprint not recognized. Try password.");
+        shake();
+      }
+    } catch {
+      setError("Biometric authentication failed.");
+      shake();
+    }
   };
 
   const startAnimations = () => {
@@ -154,7 +209,6 @@ export default function Login() {
     ]).start();
   };
 
-  // ── Core login ────────────────────────────────────────────────────────────
   const performLogin = async (loginEmail: string, loginPassword: string) => {
     try {
       const res = await fetch(`${API_BASE}/login`, {
@@ -174,65 +228,35 @@ export default function Login() {
         return;
       }
 
-      // Save session
+      // ✅ Save session
       await AsyncStorage.setItem("user", JSON.stringify(data.user));
       await AsyncStorage.setItem("authToken", data.token || "");
 
-      // Save credentials for future biometric login
+      // ✅ Save credentials for future biometric login
       await AsyncStorage.setItem("savedEmail", loginEmail.trim().toLowerCase());
       await AsyncStorage.setItem("savedPassword", loginPassword);
 
       router.replace("/(tabs)");
     } catch {
-      setError("Server connection failed. Backend running ද?");
+      setError("Server connection failed.");
       shake();
       setLoading(false);
     }
   };
 
-  // ── Fingerprint login ─────────────────────────────────────────────────────
-  const handleBiometricLogin = async () => {
-    try {
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: "Use fingerprint to sign in",
-        fallbackLabel: "Use Password",
-        cancelLabel: "Cancel",
-        disableDeviceFallback: false,
-      });
-
-      if (result.success) {
-        const savedPwd = await AsyncStorage.getItem("savedPassword");
-        const savedMail = await AsyncStorage.getItem("savedEmail");
-        if (!savedMail || !savedPwd) {
-          setError("Saved credentials not found. Please login with password.");
-          return;
-        }
-        setLoading(true);
-        await performLogin(savedMail, savedPwd);
-      } else if ((result as any).error !== "user_cancel") {
-        setError("Fingerprint not recognized. Try password.");
-        shake();
-      }
-    } catch {
-      setError("Biometric authentication failed.");
-      shake();
-    }
-  };
-
-  // ── Manual login ──────────────────────────────────────────────────────────
   const validate = (): boolean => {
     if (!email.trim()) {
-      setError("Email enter.");
+      setError("Email enter කරන්න.");
       shake();
       return false;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setError("Valid email enter.");
+      setError("Valid email enter කරන්න.");
       shake();
       return false;
     }
     if (!password) {
-      setError("Password enter.");
+      setError("Password enter කරන්න.");
       shake();
       return false;
     }
@@ -297,7 +321,7 @@ export default function Login() {
             <Animated.View style={[s.logoGlow, { opacity: glowOpacity }]} />
           </Animated.View>
 
-          {/* ── Returning user biometric card ──────────────────────────── */}
+          {/* ✅ Biometric card — only if fingerprint is set up */}
           {hasBiometric && (
             <Animated.View
               style={[
@@ -336,7 +360,7 @@ export default function Login() {
             </Animated.View>
           )}
 
-          {/* ── Login Card ──────────────────────────────────────────────── */}
+          {/* Login Card */}
           <Animated.View
             style={[
               s.card,
@@ -355,7 +379,6 @@ export default function Login() {
               end={{ x: 1, y: 0 }}
               style={s.shimmerBar}
             />
-
             <View style={s.cardBody}>
               <Text style={s.cardTitle}>
                 {hasBiometric ? "Or sign in with password" : "Welcome back"}
@@ -418,7 +441,7 @@ export default function Login() {
                     onPress={() =>
                       Alert.alert(
                         "Forgot Password",
-                        "Reset feature — backend ල add කරන්න.",
+                        "Reset feature coming soon.",
                       )
                     }
                   >
@@ -487,7 +510,7 @@ export default function Login() {
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* Fingerprint inline */}
+              {/* ✅ Fingerprint button — always visible if biometric set up */}
               {hasBiometric && (
                 <TouchableOpacity
                   style={s.bioInlineBtn}
@@ -564,6 +587,7 @@ const s = StyleSheet.create({
     width: 0.5,
     backgroundColor: "rgba(255,255,255,0.025)",
   },
+
   logoSection: {
     alignItems: "center",
     paddingTop: 60,
@@ -580,6 +604,7 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(99,102,241,0.25)",
     borderRadius: 999,
   },
+
   bioCard: {
     width: width - 32,
     marginBottom: 14,
@@ -623,6 +648,7 @@ const s = StyleSheet.create({
     textAlign: "center",
     marginTop: 4,
   },
+
   card: {
     width: width - 32,
     backgroundColor: "#0C0C22",
@@ -646,6 +672,7 @@ const s = StyleSheet.create({
     letterSpacing: -0.5,
   },
   cardSub: { fontSize: 13, color: "#3D3D66", marginBottom: 22, lineHeight: 19 },
+
   errorBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -660,6 +687,7 @@ const s = StyleSheet.create({
   errorIcon: { fontSize: 13, color: "#F87171" },
   errorText: { flex: 1, fontSize: 13, color: "#FCA5A5", lineHeight: 18 },
   errorClose: { fontSize: 12, color: "#F87171", fontWeight: "700" },
+
   fieldGroup: { marginBottom: 18 },
   fieldLabelRow: {
     flexDirection: "row",
@@ -699,6 +727,7 @@ const s = StyleSheet.create({
   },
   validTick: { fontSize: 12, color: "#10B981", fontWeight: "800" },
   eyeBtn: { padding: 2 },
+
   signInBtn: {
     borderRadius: 16,
     overflow: "hidden",
@@ -713,6 +742,7 @@ const s = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.5,
   },
+
   bioInlineBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -727,6 +757,7 @@ const s = StyleSheet.create({
   },
   bioInlineIcon: { fontSize: 18 },
   bioInlineText: { fontSize: 14, color: "#3B82F6", fontWeight: "700" },
+
   regRow: {
     flexDirection: "row",
     justifyContent: "center",
