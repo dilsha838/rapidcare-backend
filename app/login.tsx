@@ -35,7 +35,6 @@ export default function Login() {
   const [focused, setFocused] = useState<"email" | "pass" | null>(null);
   const [hasBiometric, setHasBiometric] = useState(false);
   const [savedEmail, setSavedEmail] = useState<string | null>(null);
-  const [bioChecked, setBioChecked] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const logoSlide = useRef(new Animated.Value(-30)).current;
@@ -49,27 +48,39 @@ export default function Login() {
     checkBiometricAndAutoPrompt();
   }, []);
 
-  // ✅ Check biometric — if available, auto-prompt
   const checkBiometricAndAutoPrompt = async () => {
     try {
       const compatible = await LocalAuthentication.hasHardwareAsync();
       const enrolled = await LocalAuthentication.isEnrolledAsync();
-      const hasSaved = await AsyncStorage.getItem("savedEmail");
-      const hasSavedPwd = await AsyncStorage.getItem("savedPassword");
 
-      if (compatible && enrolled && hasSaved && hasSavedPwd) {
-        setHasBiometric(true);
-        setSavedEmail(hasSaved);
-        setBioChecked(true);
-        // ✅ Auto-prompt fingerprint after short delay
-        setTimeout(() => {
-          handleBiometricLoginAuto(hasSaved, hasSavedPwd);
-        }, 800);
-      } else {
-        setBioChecked(true);
+      const storedEmail = await AsyncStorage.getItem("savedEmail");
+      const storedPassword = await AsyncStorage.getItem("savedPassword");
+      const bioEnabled = await AsyncStorage.getItem("biometricEnabled");
+
+      const hasHardware = compatible && enrolled;
+      const hasCredentials = !!storedEmail && !!storedPassword;
+      const isBioEnabled = bioEnabled === "true";
+
+      // HARD FIX: any broken state — wipe bio flag and start clean
+      if (!hasCredentials) {
+        await AsyncStorage.multiRemove([
+          "biometricEnabled",
+          "savedEmail",
+          "savedPassword",
+        ]);
+        return;
       }
-    } catch {
-      setBioChecked(true);
+
+      // All good — show fingerprint UI and auto-prompt
+      if (hasHardware && hasCredentials && isBioEnabled) {
+        setHasBiometric(true);
+        setSavedEmail(storedEmail);
+        setTimeout(() => {
+          handleBiometricLoginAuto(storedEmail!, storedPassword!);
+        }, 600);
+      }
+    } catch (e) {
+      console.log(e);
     }
   };
 
@@ -87,7 +98,7 @@ export default function Login() {
       });
       if (result.success) {
         setLoading(true);
-        await performLogin(savedMail, savedPwd);
+        await performLogin(savedMail, savedPwd, true); // ✅ skip bio prompt, go straight to tabs
       }
       // If cancelled or failed — just show login form normally
     } catch {}
@@ -96,21 +107,29 @@ export default function Login() {
   // ✅ Manual fingerprint button press
   const handleBiometricLogin = async () => {
     try {
+      const storedPwd = await AsyncStorage.getItem("savedPassword");
+      const storedMail = await AsyncStorage.getItem("savedEmail");
+
+      // No saved credentials — cannot use fingerprint, show helpful message
+      if (!storedMail || !storedPwd) {
+        Alert.alert(
+          "Setup Required 👆",
+          "Please sign in with your password once to enable fingerprint login.",
+          [{ text: "OK", style: "default" }],
+        );
+        return;
+      }
+
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: "Use fingerprint to sign in",
         fallbackLabel: "Use Password",
         cancelLabel: "Cancel",
         disableDeviceFallback: false,
       });
+
       if (result.success) {
-        const savedPwd = await AsyncStorage.getItem("savedPassword");
-        const savedMail = await AsyncStorage.getItem("savedEmail");
-        if (!savedMail || !savedPwd) {
-          setError("Saved credentials not found. Please login with password.");
-          return;
-        }
         setLoading(true);
-        await performLogin(savedMail, savedPwd);
+        await performLogin(storedMail, storedPwd, true);
       } else if ((result as any).error !== "user_cancel") {
         setError("Fingerprint not recognized. Try password.");
         shake();
@@ -209,7 +228,11 @@ export default function Login() {
     ]).start();
   };
 
-  const performLogin = async (loginEmail: string, loginPassword: string) => {
+  const performLogin = async (
+    loginEmail: string,
+    loginPassword: string,
+    skipBioPrompt = false, // ✅ true when called from fingerprint — skip the enable prompt
+  ) => {
     try {
       const res = await fetch(`${API_BASE}/login`, {
         method: "POST",
@@ -228,14 +251,49 @@ export default function Login() {
         return;
       }
 
-      // ✅ Save session
       await AsyncStorage.setItem("user", JSON.stringify(data.user));
       await AsyncStorage.setItem("authToken", data.token || "");
-
-      // ✅ Save credentials for future biometric login
       await AsyncStorage.setItem("savedEmail", loginEmail.trim().toLowerCase());
       await AsyncStorage.setItem("savedPassword", loginPassword);
 
+      // ✅ Only show "Enable fingerprint?" prompt on manual password login
+      if (!skipBioPrompt) {
+        try {
+          const compatible = await LocalAuthentication.hasHardwareAsync();
+          const enrolled = await LocalAuthentication.isEnrolledAsync();
+          const alreadySet = await AsyncStorage.getItem("biometricEnabled");
+
+          // Show prompt if never asked (null) OR was skipped before ("false")
+          if (compatible && enrolled && alreadySet !== "true") {
+            Alert.alert(
+              "Enable Fingerprint Login? 👆",
+              "Next time fingerprint login will be faster.",
+              [
+                {
+                  text: "Enable",
+                  onPress: async () => {
+                    await AsyncStorage.setItem("biometricEnabled", "true");
+                    router.replace("/(tabs)");
+                  },
+                },
+                {
+                  text: "Not Now",
+                  style: "cancel",
+                  onPress: async () => {
+                    // Save "skipped" so we don't ask again this session
+                    // but don't permanently disable — ask again next fresh install
+                    await AsyncStorage.setItem("biometricEnabled", "false");
+                    router.replace("/(tabs)");
+                  },
+                },
+              ],
+            );
+            return;
+          }
+        } catch {}
+      }
+
+      // ✅ Fingerprint login or already set up — go straight to app
       router.replace("/(tabs)");
     } catch {
       setError("Server connection failed.");
@@ -246,17 +304,17 @@ export default function Login() {
 
   const validate = (): boolean => {
     if (!email.trim()) {
-      setError("Email enter කරන්න.");
+      setError("Email enter.");
       shake();
       return false;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setError("Valid email enter කරන්න.");
+      setError("Valid email enter.");
       shake();
       return false;
     }
     if (!password) {
-      setError("Password enter කරන්න.");
+      setError("Password enter.");
       shake();
       return false;
     }
@@ -321,8 +379,8 @@ export default function Login() {
             <Animated.View style={[s.logoGlow, { opacity: glowOpacity }]} />
           </Animated.View>
 
-          {/* ✅ Biometric card — only if fingerprint is set up */}
-          {hasBiometric && (
+          {/* ✅ Biometric card — only shown when credentials + biometric are fully set up */}
+          {hasBiometric && savedEmail && (
             <Animated.View
               style={[
                 s.bioCard,
@@ -381,7 +439,9 @@ export default function Login() {
             />
             <View style={s.cardBody}>
               <Text style={s.cardTitle}>
-                {hasBiometric ? "Or sign in with password" : "Welcome back"}
+                {hasBiometric && savedEmail
+                  ? "Or sign in with password"
+                  : "Welcome back"}
               </Text>
               <Text style={s.cardSub}>Sign in to your RapidCare account</Text>
 
@@ -510,8 +570,8 @@ export default function Login() {
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* ✅ Fingerprint button — always visible if biometric set up */}
-              {hasBiometric && (
+              {/* ✅ Fingerprint inline button — only if credentials saved */}
+              {hasBiometric && savedEmail && (
                 <TouchableOpacity
                   style={s.bioInlineBtn}
                   onPress={handleBiometricLogin}

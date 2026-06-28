@@ -32,7 +32,7 @@ export default function ProfileScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [notifications, setNotifications] = useState(true);
-  const [biometric, setBiometric] = useState(true);
+  const [biometric, setBiometric] = useState(false); // ✅ default false, load from storage
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
@@ -83,7 +83,26 @@ export default function ProfileScreen() {
     try {
       const data = await AsyncStorage.getItem("user");
       if (data) setUser(JSON.parse(data));
+
+      // ✅ Load actual biometric setting from AsyncStorage
+      const bioEnabled = await AsyncStorage.getItem("biometricEnabled");
+      setBiometric(bioEnabled === "true");
     } catch {}
+  };
+
+  // ✅ Proper biometric toggle — saves to AsyncStorage
+  const handleBiometricToggle = async (value: boolean) => {
+    setBiometric(value);
+    if (value) {
+      await AsyncStorage.setItem("biometricEnabled", "true");
+    } else {
+      // Disable: remove the flag (credentials stay saved for password login)
+      await AsyncStorage.removeItem("biometricEnabled");
+      Alert.alert(
+        "Fingerprint Disabled",
+        "Fingerprint login has been turned off. You can re-enable it anytime.",
+      );
+    }
   };
 
   const handleLogout = async () => {
@@ -98,6 +117,7 @@ export default function ProfileScreen() {
             "authToken",
             "savedEmail",
             "savedPassword",
+            "biometricEnabled",
             "lastToken",
             "upcomingAppointment",
           ]);
@@ -220,7 +240,7 @@ export default function ProfileScreen() {
           color: "#10B981",
           toggle: true,
           value: biometric,
-          onToggle: setBiometric,
+          onToggle: handleBiometricToggle, // ✅ now uses real handler
         },
         {
           icon: "trash-outline" as const,
