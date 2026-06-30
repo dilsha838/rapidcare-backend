@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -33,8 +32,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [focused, setFocused] = useState<"email" | "pass" | null>(null);
-  const [hasBiometric, setHasBiometric] = useState(false);
-  const [savedEmail, setSavedEmail] = useState<string | null>(null);
+  const [hasBiometric, setHasBiometric] = useState(true);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const logoSlide = useRef(new Animated.Value(-30)).current;
@@ -45,101 +43,132 @@ export default function Login() {
 
   useEffect(() => {
     startAnimations();
-    checkBiometricAndAutoPrompt();
+    checkSavedCredentials();
   }, []);
 
-  const checkBiometricAndAutoPrompt = async () => {
-    try {
-      const compatible = await LocalAuthentication.hasHardwareAsync();
-      const enrolled = await LocalAuthentication.isEnrolledAsync();
 
+  const checkSavedCredentials = async () => {
+    try {
       const storedEmail = await AsyncStorage.getItem("savedEmail");
       const storedPassword = await AsyncStorage.getItem("savedPassword");
       const bioEnabled = await AsyncStorage.getItem("biometricEnabled");
 
-      const hasHardware = compatible && enrolled;
-      const hasCredentials = !!storedEmail && !!storedPassword;
-      const isBioEnabled = bioEnabled === "true";
+      if (storedEmail) setEmail(storedEmail);
+      if (storedPassword) setPassword(storedPassword);
 
-      // HARD FIX: any broken state — wipe bio flag and start clean
-      if (!hasCredentials) {
-        await AsyncStorage.multiRemove([
-          "biometricEnabled",
-          "savedEmail",
-          "savedPassword",
-        ]);
-        return;
-      }
-
-      // All good — show fingerprint UI and auto-prompt
-      if (hasHardware && hasCredentials && isBioEnabled) {
-        setHasBiometric(true);
-        setSavedEmail(storedEmail);
+     
+      if (storedEmail && storedPassword && bioEnabled === "true") {
         setTimeout(() => {
-          handleBiometricLoginAuto(storedEmail!, storedPassword!);
-        }, 600);
+          handleBiometricLogin();
+        }, 500);
       }
     } catch (e) {
       console.log(e);
     }
   };
 
-  // ✅ Auto fingerprint prompt (called on page load)
-  const handleBiometricLoginAuto = async (
-    savedMail: string,
-    savedPwd: string,
-  ) => {
+  // 🔥 FIXED BIOMETRIC LOGIN LOGIC
+  const handleBiometricLogin = async () => {
     try {
+      setError("");
+
+      // 1. Hardware Check
+      const compatible = await LocalAuthentication.hasHardwareAsync();
+      const enrolled = await LocalAuthentication.isEnrolledAsync();
+
+      if (!compatible || !enrolled) {
+        setError("Biometric authentication is not set up on this device.");
+        shake();
+        return;
+      }
+
+   
+      const storedEmail = await AsyncStorage.getItem("savedEmail");
+      const storedPassword = await AsyncStorage.getItem("savedPassword");
+
+      let targetEmail = storedEmail || email.trim();
+      let targetPassword = storedPassword || password;
+
+     
+      if (!targetEmail || !targetPassword) {
+        setError(
+          "Please enter your email & password first to sign in and enable Fingerprint.",
+        );
+        shake();
+        return;
+      }
+
+      
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: "Sign in to RapidCare",
         fallbackLabel: "Use Password",
         cancelLabel: "Cancel",
         disableDeviceFallback: false,
       });
+
+    
       if (result.success) {
         setLoading(true);
-        await performLogin(savedMail, savedPwd, true); // ✅ skip bio prompt, go straight to tabs
+       
+        setEmail(targetEmail);
+        setPassword(targetPassword);
+
+        await performLogin(targetEmail, targetPassword);
       }
-      // If cancelled or failed — just show login form normally
-    } catch {}
-  };
-
-  // ✅ Manual fingerprint button press
-  const handleBiometricLogin = async () => {
-    try {
-      const storedPwd = await AsyncStorage.getItem("savedPassword");
-      const storedMail = await AsyncStorage.getItem("savedEmail");
-
-      // No saved credentials — cannot use fingerprint, show helpful message
-      if (!storedMail || !storedPwd) {
-        Alert.alert(
-          "Setup Required 👆",
-          "Please sign in with your password once to enable fingerprint login.",
-          [{ text: "OK", style: "default" }],
-        );
-        return;
-      }
-
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: "Use fingerprint to sign in",
-        fallbackLabel: "Use Password",
-        cancelLabel: "Cancel",
-        disableDeviceFallback: false,
-      });
-
-      if (result.success) {
-        setLoading(true);
-        await performLogin(storedMail, storedPwd, true);
-      } else if ((result as any).error !== "user_cancel") {
-        setError("Fingerprint not recognized. Try password.");
-        shake();
-      }
-    } catch {
-      setError("Biometric authentication failed.");
+    } catch (e) {
+      setError("Biometric authentication error.");
       shake();
     }
   };
 
+
+  const performLogin = async (loginEmail: string, loginPassword: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginEmail.toLowerCase().trim(),
+          password: loginPassword,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.message || "Invalid credentials.");
+        shake();
+        setLoading(false);
+        return;
+      }
+
+    
+      await AsyncStorage.setItem("user", JSON.stringify(data.user));
+      await AsyncStorage.setItem("authToken", data.token || "");
+      await AsyncStorage.setItem("savedEmail", loginEmail.toLowerCase().trim());
+      await AsyncStorage.setItem("savedPassword", loginPassword);
+      await AsyncStorage.setItem("biometricEnabled", "true");
+
+      setLoading(false);
+      router.replace("/(tabs)");
+    } catch {
+      setError("Server connection failed.");
+      shake();
+      setLoading(false);
+    }
+  };
+
+  const handlePasswordLogin = async () => {
+    if (!email.trim() || !password) {
+      setError("Please fill in all fields.");
+      shake();
+      return;
+    }
+    setLoading(true);
+    setError("");
+    await performLogin(email, password);
+  };
+
+  // Animations
   const startAnimations = () => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -183,7 +212,7 @@ export default function Login() {
     Animated.loop(
       Animated.sequence([
         Animated.timing(bioAnim, {
-          toValue: 1.12,
+          toValue: 1.08,
           duration: 900,
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
@@ -228,111 +257,6 @@ export default function Login() {
     ]).start();
   };
 
-  const performLogin = async (
-    loginEmail: string,
-    loginPassword: string,
-    skipBioPrompt = false, // ✅ true when called from fingerprint — skip the enable prompt
-  ) => {
-    try {
-      const res = await fetch(`${API_BASE}/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: loginEmail.trim().toLowerCase(),
-          password: loginPassword,
-        }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.message || "Invalid email or password.");
-        shake();
-        setLoading(false);
-        return;
-      }
-
-      await AsyncStorage.setItem("user", JSON.stringify(data.user));
-      await AsyncStorage.setItem("authToken", data.token || "");
-      await AsyncStorage.setItem("savedEmail", loginEmail.trim().toLowerCase());
-      await AsyncStorage.setItem("savedPassword", loginPassword);
-
-      // ✅ Only show "Enable fingerprint?" prompt on manual password login
-      if (!skipBioPrompt) {
-        try {
-          const compatible = await LocalAuthentication.hasHardwareAsync();
-          const enrolled = await LocalAuthentication.isEnrolledAsync();
-          const alreadySet = await AsyncStorage.getItem("biometricEnabled");
-
-          // Show prompt if never asked (null) OR was skipped before ("false")
-          if (compatible && enrolled && alreadySet !== "true") {
-            Alert.alert(
-              "Enable Fingerprint Login? 👆",
-              "Next time fingerprint login will be faster.",
-              [
-                {
-                  text: "Enable",
-                  onPress: async () => {
-                    await AsyncStorage.setItem("biometricEnabled", "true");
-                    router.replace("/(tabs)");
-                  },
-                },
-                {
-                  text: "Not Now",
-                  style: "cancel",
-                  onPress: async () => {
-                    // Save "skipped" so we don't ask again this session
-                    // but don't permanently disable — ask again next fresh install
-                    await AsyncStorage.setItem("biometricEnabled", "false");
-                    router.replace("/(tabs)");
-                  },
-                },
-              ],
-            );
-            return;
-          }
-        } catch {}
-      }
-
-      // ✅ Fingerprint login or already set up — go straight to app
-      router.replace("/(tabs)");
-    } catch {
-      setError("Server connection failed.");
-      shake();
-      setLoading(false);
-    }
-  };
-
-  const validate = (): boolean => {
-    if (!email.trim()) {
-      setError("Email enter.");
-      shake();
-      return false;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setError("Valid email enter.");
-      shake();
-      return false;
-    }
-    if (!password) {
-      setError("Password enter.");
-      shake();
-      return false;
-    }
-    if (password.length < 6) {
-      setError("Password too short.");
-      shake();
-      return false;
-    }
-    return true;
-  };
-
-  const handleLogin = async () => {
-    if (!validate()) return;
-    setLoading(true);
-    setError("");
-    await performLogin(email, password);
-  };
-
   const glowOpacity = glowAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0.3, 0.7],
@@ -342,7 +266,6 @@ export default function Login() {
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor="#050510" />
 
-      {/* Background */}
       <View style={s.bgAbs} pointerEvents="none">
         <Animated.View style={[s.blob, s.blobTL, { opacity: glowOpacity }]} />
         <Animated.View style={[s.blob, s.blobBR, { opacity: glowOpacity }]} />
@@ -364,7 +287,6 @@ export default function Login() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Logo */}
           <Animated.View
             style={[
               s.logoSection,
@@ -379,23 +301,17 @@ export default function Login() {
             <Animated.View style={[s.logoGlow, { opacity: glowOpacity }]} />
           </Animated.View>
 
-          {/* ✅ Biometric card — only shown when credentials + biometric are fully set up */}
-          {hasBiometric && savedEmail && (
+          {/* Top Biometric Card */}
+          {hasBiometric && (
             <Animated.View
               style={[
                 s.bioCard,
                 { opacity: fadeAnim, transform: [{ translateY: cardSlide }] },
               ]}
             >
-              <LinearGradient
-                colors={["#0B1A3A", "#0D2348"]}
-                style={s.bioCardInner}
-              >
+              <View style={s.bioCardInner}>
                 <View style={s.bioLeft}>
                   <Text style={s.bioWelcome}>Welcome back! 👋</Text>
-                  <Text style={s.bioEmail} numberOfLines={1}>
-                    {savedEmail}
-                  </Text>
                   <Text style={s.bioHint}>
                     Tap fingerprint to sign in instantly
                   </Text>
@@ -403,22 +319,20 @@ export default function Login() {
                 <TouchableOpacity
                   onPress={handleBiometricLogin}
                   activeOpacity={0.85}
+                  style={s.bioBtnWrapper}
                 >
-                  <Animated.View style={{ transform: [{ scale: bioAnim }] }}>
-                    <LinearGradient
-                      colors={["#1E40AF", "#3B82F6"]}
-                      style={s.bioBtnGrad}
-                    >
-                      <Text style={s.bioBtnIcon}>👆</Text>
-                    </LinearGradient>
+                  <Animated.View
+                    style={[s.bioCircle, { transform: [{ scale: bioAnim }] }]}
+                  >
+                    <Text style={s.bioBtnIcon}>👇</Text>
                   </Animated.View>
                   <Text style={s.bioBtnLabel}>Touch ID</Text>
                 </TouchableOpacity>
-              </LinearGradient>
+              </View>
             </Animated.View>
           )}
 
-          {/* Login Card */}
+          {/* Main Card */}
           <Animated.View
             style={[
               s.card,
@@ -432,31 +346,25 @@ export default function Login() {
             ]}
           >
             <LinearGradient
-              colors={["#3B82F6", "#6366F1", "#A855F7", "#EC4899"]}
+              colors={["#3B82F6", "#EC4899"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               style={s.shimmerBar}
             />
+
             <View style={s.cardBody}>
-              <Text style={s.cardTitle}>
-                {hasBiometric && savedEmail
-                  ? "Or sign in with password"
-                  : "Welcome back"}
-              </Text>
+              <Text style={s.cardTitle}>Or sign in with password</Text>
               <Text style={s.cardSub}>Sign in to your RapidCare account</Text>
 
-              {/* Error */}
+              {/* Dynamic Error Alert */}
               {!!error && (
-                <Animated.View style={s.errorBanner}>
-                  <Text style={s.errorIcon}>⚠</Text>
+                <View style={s.errorBanner}>
+                  <Text style={s.errorIcon}>⚠️</Text>
                   <Text style={s.errorText}>{error}</Text>
-                  <TouchableOpacity
-                    onPress={() => setError("")}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
+                  <TouchableOpacity onPress={() => setError("")}>
                     <Text style={s.errorClose}>✕</Text>
                   </TouchableOpacity>
-                </Animated.View>
+                </View>
               )}
 
               {/* Email */}
@@ -480,16 +388,9 @@ export default function Login() {
                     }}
                     keyboardType="email-address"
                     autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="next"
                     onFocus={() => setFocused("email")}
                     onBlur={() => setFocused(null)}
                   />
-                  {/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && (
-                    <View style={s.validBadge}>
-                      <Text style={s.validTick}>✓</Text>
-                    </View>
-                  )}
                 </View>
               </View>
 
@@ -497,16 +398,6 @@ export default function Login() {
               <View style={s.fieldGroup}>
                 <View style={s.fieldLabelRow}>
                   <Text style={s.fieldLabel}>PASSWORD</Text>
-                  <TouchableOpacity
-                    onPress={() =>
-                      Alert.alert(
-                        "Forgot Password",
-                        "Reset feature coming soon.",
-                      )
-                    }
-                  >
-                    <Text style={s.forgotLink}>Forgot password?</Text>
-                  </TouchableOpacity>
                 </View>
                 <View
                   style={[
@@ -516,7 +407,7 @@ export default function Login() {
                 >
                   <Text style={s.inputEmoji}>🔐</Text>
                   <TextInput
-                    style={[s.textInput, { flex: 1 }]}
+                    style={s.textInput}
                     placeholder="Enter your password"
                     placeholderTextColor="#2E2E50"
                     value={password}
@@ -525,15 +416,12 @@ export default function Login() {
                       setError("");
                     }}
                     secureTextEntry={!showPass}
-                    returnKeyType="done"
-                    onSubmitEditing={handleLogin}
                     onFocus={() => setFocused("pass")}
                     onBlur={() => setFocused(null)}
                   />
                   <TouchableOpacity
                     onPress={() => setShowPass(!showPass)}
                     style={s.eyeBtn}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   >
                     <Text style={{ fontSize: 16 }}>
                       {showPass ? "🙈" : "👁️"}
@@ -542,62 +430,45 @@ export default function Login() {
                 </View>
               </View>
 
-              {/* Sign In */}
+              {/* Standard Sign In */}
               <TouchableOpacity
-                onPress={handleLogin}
+                onPress={handlePasswordLogin}
                 disabled={loading}
                 activeOpacity={0.87}
-                style={[s.signInBtn, loading && { opacity: 0.65 }]}
+                style={s.signInBtn}
               >
                 <LinearGradient
-                  colors={
-                    loading
-                      ? ["#1A1A35", "#1A1A35"]
-                      : ["#3B82F6", "#6366F1", "#A855F7"]
-                  }
+                  colors={["#3B82F6", "#6366F1", "#A855F7"]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={s.signInGrad}
                 >
                   {loading ? (
-                    <View style={s.loadRow}>
-                      <ActivityIndicator color="#fff" size="small" />
-                      <Text style={s.signInText}>Signing in...</Text>
-                    </View>
+                    <ActivityIndicator color="#fff" size="small" />
                   ) : (
                     <Text style={s.signInText}>Sign In →</Text>
                   )}
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* ✅ Fingerprint inline button — only if credentials saved */}
-              {hasBiometric && savedEmail && (
-                <TouchableOpacity
-                  style={s.bioInlineBtn}
-                  onPress={handleBiometricLogin}
-                  activeOpacity={0.85}
-                >
-                  <Text style={s.bioInlineIcon}>👆</Text>
-                  <Text style={s.bioInlineText}>Sign in with Fingerprint</Text>
-                </TouchableOpacity>
-              )}
+              {/* Bottom Fingerprint Button */}
+              <TouchableOpacity
+                style={s.bioInlineBtn}
+                onPress={handleBiometricLogin}
+                activeOpacity={0.85}
+              >
+                <Text style={s.bioInlineIcon}>👇</Text>
+                <Text style={s.bioInlineText}>Sign in with Fingerprint</Text>
+              </TouchableOpacity>
 
-              {/* Register */}
               <View style={s.regRow}>
                 <Text style={s.regLabel}>Don't have an account? </Text>
-                <TouchableOpacity
-                  onPress={() => router.push("/signup")}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
+                <TouchableOpacity onPress={() => router.push("/signup")}>
                   <Text style={s.regLink}>Create one</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </Animated.View>
-
-          <Animated.Text style={[s.footer, { opacity: fadeAnim }]}>
-            Protected by RapidCare Security · Terms · Privacy
-          </Animated.Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -607,7 +478,7 @@ export default function Login() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#050510" },
   flex: { flex: 1 },
-  scroll: { flexGrow: 1, paddingBottom: 48, alignItems: "center" },
+  scroll: { flexGrow: 1, paddingBottom: 30, alignItems: "center" },
   bgAbs: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
   blob: { position: "absolute", borderRadius: 999 },
   blobTL: {
@@ -647,107 +518,87 @@ const s = StyleSheet.create({
     width: 0.5,
     backgroundColor: "rgba(255,255,255,0.025)",
   },
-
   logoSection: {
     alignItems: "center",
-    paddingTop: 60,
-    paddingBottom: 20,
+    paddingTop: 40,
+    paddingBottom: 15,
     width: "100%",
-    position: "relative",
   },
-  logoImg: { width: width * 0.72, height: 100 },
+  logoImg: { width: width * 0.6, height: 80 },
   logoGlow: {
     position: "absolute",
-    bottom: 10,
-    width: width * 0.5,
-    height: 40,
+    bottom: 5,
+    width: width * 0.4,
+    height: 30,
     backgroundColor: "rgba(99,102,241,0.25)",
     borderRadius: 999,
   },
-
   bioCard: {
     width: width - 32,
-    marginBottom: 14,
-    borderRadius: 22,
+    marginBottom: 16,
+    borderRadius: 24,
     overflow: "hidden",
+    backgroundColor: "#0E1E38",
     borderWidth: 1,
-    borderColor: "#1C3A6A",
+    borderColor: "#1A2E54",
   },
   bioCardInner: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: 18,
+    padding: 22,
   },
-  bioLeft: { flex: 1, marginRight: 16 },
+  bioLeft: { flex: 1 },
   bioWelcome: {
-    fontSize: 16,
-    fontWeight: "800",
+    fontSize: 18,
+    fontWeight: "700",
     color: "#FFFFFF",
-    marginBottom: 3,
+    marginBottom: 6,
   },
-  bioEmail: {
-    fontSize: 13,
-    color: "#3B82F6",
-    marginBottom: 5,
-    fontWeight: "600",
-  },
-  bioHint: { fontSize: 11, color: "#555580", lineHeight: 16 },
-  bioBtnGrad: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+  bioHint: { fontSize: 13, color: "#6B7C96" },
+  bioBtnWrapper: { alignItems: "center" },
+  bioCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#2563EB",
     justifyContent: "center",
     alignItems: "center",
+    marginBottom: 6,
   },
-  bioBtnIcon: { fontSize: 26 },
-  bioBtnLabel: {
-    fontSize: 10,
-    color: "#3B82F6",
-    fontWeight: "600",
-    textAlign: "center",
-    marginTop: 4,
-  },
-
+  bioBtnIcon: { fontSize: 24 },
+  bioBtnLabel: { fontSize: 11, color: "#3B82F6", fontWeight: "600" },
   card: {
     width: width - 32,
-    backgroundColor: "#0C0C22",
+    backgroundColor: "#0A0A1E",
     borderRadius: 28,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#1C1C3A",
-    shadowColor: "#6366F1",
-    shadowOffset: { width: 0, height: 20 },
-    shadowOpacity: 0.3,
-    shadowRadius: 40,
-    elevation: 20,
+    borderColor: "#141432",
   },
   shimmerBar: { height: 3, width: "100%" },
-  cardBody: { padding: 28 },
+  cardBody: { padding: 24 },
   cardTitle: {
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 23,
+    fontWeight: "700",
     color: "#FFFFFF",
-    marginBottom: 5,
-    letterSpacing: -0.5,
+    marginBottom: 6,
   },
-  cardSub: { fontSize: 13, color: "#3D3D66", marginBottom: 22, lineHeight: 19 },
-
+  cardSub: { fontSize: 14, color: "#3A3A5E", marginBottom: 20 },
   errorBanner: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: "rgba(239,68,68,0.09)",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(239,68,68,0.1)",
     borderRadius: 12,
-    padding: 12,
+    padding: 14,
     marginBottom: 18,
-    borderWidth: 0.5,
-    borderColor: "rgba(239,68,68,0.3)",
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.2)",
   },
-  errorIcon: { fontSize: 13, color: "#F87171" },
+  errorIcon: { fontSize: 14, color: "#EF4444" },
   errorText: { flex: 1, fontSize: 13, color: "#FCA5A5", lineHeight: 18 },
-  errorClose: { fontSize: 12, color: "#F87171", fontWeight: "700" },
-
+  errorClose: { fontSize: 12, color: "#EF4444", padding: 2 },
   fieldGroup: { marginBottom: 18 },
   fieldLabelRow: {
     flexDirection: "row",
@@ -756,74 +607,53 @@ const s = StyleSheet.create({
     marginBottom: 8,
   },
   fieldLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#3D3D66",
-    letterSpacing: 1.2,
-    marginBottom: 8,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#3A3A5E",
+    letterSpacing: 1,
   },
-  forgotLink: { fontSize: 12, color: "#6366F1", fontWeight: "700" },
   inputWrap: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: "#08081C",
-    borderRadius: 16,
+    gap: 12,
+    backgroundColor: "#050515",
+    borderRadius: 14,
     paddingHorizontal: 16,
     height: 56,
     borderWidth: 1,
-    borderColor: "#1C1C3A",
+    borderColor: "#141432",
   },
-  inputWrapFocused: { borderColor: "#6366F1", backgroundColor: "#0B0B22" },
+  inputWrapFocused: { borderColor: "#3B82F6" },
   inputEmoji: { fontSize: 16 },
   textInput: { flex: 1, fontSize: 15, color: "#FFFFFF" },
-  validBadge: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: "rgba(16,185,129,0.15)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  validTick: { fontSize: 12, color: "#10B981", fontWeight: "800" },
-  eyeBtn: { padding: 2 },
-
+  eyeBtn: { padding: 4 },
   signInBtn: {
-    borderRadius: 16,
+    borderRadius: 14,
     overflow: "hidden",
-    marginTop: 6,
-    marginBottom: 14,
+    marginTop: 8,
+    marginBottom: 16,
   },
-  signInGrad: { height: 58, justifyContent: "center", alignItems: "center" },
-  loadRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  signInText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-  },
-
+  signInGrad: { height: 54, justifyContent: "center", alignItems: "center" },
+  signInText: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
   bioInlineBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    backgroundColor: "rgba(59,130,246,0.1)",
+    gap: 10,
+    backgroundColor: "rgba(59,130,246,0.05)",
     borderRadius: 14,
-    paddingVertical: 12,
-    marginBottom: 16,
-    borderWidth: 0.5,
-    borderColor: "rgba(59,130,246,0.3)",
+    paddingVertical: 14,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "rgba(59,130,246,0.15)",
   },
   bioInlineIcon: { fontSize: 18 },
-  bioInlineText: { fontSize: 14, color: "#3B82F6", fontWeight: "700" },
-
+  bioInlineText: { fontSize: 14, color: "#3B82F6", fontWeight: "600" },
   regRow: {
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
   },
-  regLabel: { fontSize: 14, color: "#3D3D66" },
-  regLink: { fontSize: 14, color: "#818CF8", fontWeight: "800" },
-  footer: { fontSize: 11, color: "#1C1C30", marginTop: 28, letterSpacing: 0.3 },
+  regLabel: { fontSize: 14, color: "#3A3A5E" },
+  regLink: { fontSize: 14, color: "#3B82F6", fontWeight: "700" },
 });

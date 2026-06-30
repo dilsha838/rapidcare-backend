@@ -276,40 +276,44 @@ export default function Payment() {
   // ── Cancel booking ────────────────────────────────────────────────────────
   const handleCancel = (booking: Booking) => {
     const bookingId = booking.id || booking.bookingId || booking.order_id;
-    Alert.alert("Cancel Booking", "Are you sure you want to cancel this booking?", [
-      { text: "No", style: "cancel" },
-      {
-        text: "Yes, Cancel",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await fetch(`${API_BASE}/bookings/${bookingId}/cancel`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-            });
-            // Update local state
-            setBookings((prev) =>
-              prev.map((b) =>
-                b.id === booking.id ? { ...b, status: "cancelled" } : b,
-              ),
-            );
-            // If this is the current token, mark as cancelled
-            const ltRaw = await AsyncStorage.getItem("lastToken");
-            if (ltRaw) {
-              const lt = JSON.parse(ltRaw);
-              if (String(lt.bookingId) === String(bookingId)) {
-                await AsyncStorage.setItem(
-                  "lastToken",
-                  JSON.stringify({ ...lt, status: "cancelled" }),
-                );
+    Alert.alert(
+      "Cancel Booking",
+      "Are you sure you want to cancel this booking?",
+      [
+        { text: "No", style: "cancel" },
+        {
+          text: "Yes, Cancel",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await fetch(`${API_BASE}/bookings/${bookingId}/cancel`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+              });
+              // Update local state
+              setBookings((prev) =>
+                prev.map((b) =>
+                  b.id === booking.id ? { ...b, status: "cancelled" } : b,
+                ),
+              );
+              // If this is the current token, mark as cancelled
+              const ltRaw = await AsyncStorage.getItem("lastToken");
+              if (ltRaw) {
+                const lt = JSON.parse(ltRaw);
+                if (String(lt.bookingId) === String(bookingId)) {
+                  await AsyncStorage.setItem(
+                    "lastToken",
+                    JSON.stringify({ ...lt, status: "cancelled" }),
+                  );
+                }
               }
+            } catch {
+              Alert.alert("Error", "Failed to cancel the booking.");
             }
-          } catch {
-            Alert.alert("Error", "Failed to cancel the booking.");
-          }
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   // ── Parse tests from DB ───────────────────────────────────────────────────

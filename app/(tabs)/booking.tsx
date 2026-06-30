@@ -345,7 +345,7 @@ export default function BloodTestBooking() {
       if (cart.length >= MAX_TESTS) {
         Alert.alert(
           "Maximum Reached",
-          `Maximum ${MAX_TESTS} tests select කරන්න පුළුවන්.`,
+          `Maximum ${MAX_TESTS} tests selected.`,
         );
         return;
       }
@@ -377,7 +377,7 @@ export default function BloodTestBooking() {
   // ✅ Save everything and navigate
   const handleProceed = async () => {
     if (cart.length === 0) {
-      Alert.alert("Empty Cart", "Tests select කරන්න.");
+      Alert.alert("Empty Cart", "Please select some tests.");
       return;
     }
     await AsyncStorage.setItem("cartItems", JSON.stringify(cart));

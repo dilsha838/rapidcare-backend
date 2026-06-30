@@ -115,7 +115,7 @@ export default function TokenScreen() {
           return;
         }
 
-        // ✅ Appointment 
+        // ✅ Appointment
         try {
           const [y, mo, d] = t.date.split("-").map(Number);
           const apptDate = new Date(y, mo - 1, d);

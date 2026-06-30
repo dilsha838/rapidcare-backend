@@ -130,7 +130,7 @@ export default function TabLayout() {
       />
 
       {/* Hidden tabs — not in tab bar */}
-      <Tabs.Screen name="context/_layout" options={{ href: null }} />
+    
     </Tabs>
   );
 }
