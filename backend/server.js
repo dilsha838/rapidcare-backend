@@ -7,42 +7,74 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ MYSQL CONNECTION POOL — Railway env vars + local fallback
-const db = mysql.createPool({
+// ✅ MYSQL CONNECTION
+const db = mysql.createConnection({
   host: process.env.MYSQLHOST || "localhost",
   user: process.env.MYSQLUSER || "root",
   password: process.env.MYSQLPASSWORD || "",
   database: process.env.MYSQLDATABASE || "rapidcare",
   port: process.env.MYSQLPORT || 3306,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
 });
-
-// ✅ Test connection on startup
-db.getConnection((err, connection) => {
+db.connect((err) => {
   if (err) {
-    console.log("❌ DB Error:", err.message);
+    console.log("❌ DB Error:", err);
   } else {
     console.log("✅ MySQL Connected");
-    connection.release();
   }
 });
 
-// ✅ Keep-alive ping — Railway free plan sleep prevent
-setInterval(
-  () => {
-    db.query("SELECT 1", (err) => {
-      if (err) console.log("Keep-alive error:", err.message);
-      else console.log("💓 DB keep-alive ping");
-    });
-  },
-  25 * 60 * 1000,
-); // every 25 min
+// ✅ AUTO CREATE TABLES
+db.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100), email VARCHAR(100) UNIQUE,
+    phone VARCHAR(20), password VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
+db.query(`
+  CREATE TABLE IF NOT EXISTS bookings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_name VARCHAR(100), user_email VARCHAR(100),
+    branch VARCHAR(100), booking_date DATE,
+    time_slot VARCHAR(20),
+    tests JSON, total_amount DECIMAL(10,2),
+    token_number INT DEFAULT 1,
+    order_id VARCHAR(100),
+    status VARCHAR(20) DEFAULT 'upcoming',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS queue (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    branch VARCHAR(100), date DATE,
+    current_number INT DEFAULT 1,
+    total_tokens INT DEFAULT 0,
+    is_active TINYINT DEFAULT 1,
+    UNIQUE KEY branch_date (branch, date)
+  )
+`);
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS branches (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100), address VARCHAR(255),
+    phone VARCHAR(30), hours VARCHAR(50),
+    days VARCHAR(50), color VARCHAR(20),
+    badge VARCHAR(50), services TEXT,
+    parking TINYINT DEFAULT 0, ac TINYINT DEFAULT 0,
+    wifi TINYINT DEFAULT 0, wait_time VARCHAR(20),
+    map_url VARCHAR(255), is_active TINYINT DEFAULT 1
+  )
+`);
+
+// ✅ TEST ROUTE
 app.get("/", (req, res) => res.send("RapidCare API Running 🚀"));
 
-// ✅ SIGNUP
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
 app.post("/signup", async (req, res) => {
   try {
     const { name, email, phone, password } = req.body;
@@ -66,12 +98,11 @@ app.post("/signup", async (req, res) => {
         );
       },
     );
-  } catch (error) {
+  } catch {
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// ✅ LOGIN
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
   db.query(
@@ -86,123 +117,13 @@ app.post("/login", (req, res) => {
       if (!valid) return res.status(401).json({ message: "Invalid password" });
       res.json({
         message: "Login success",
-        token: "rc_token_" + user.id,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-        },
+        user: { id: user.id, name: user.name, email: user.email },
       });
     },
   );
 });
 
-// ============================================================================
-// FORGOT PASSWORD - OTP based (no email service configured yet)
-// In-memory store: { email: { otp, expiresAt, verified } }
-// ============================================================================
-const otpStore = {};
-
-function generateOtp() {
-  return String(Math.floor(1000 + Math.random() * 9000)); // 4-digit code
-}
-
-// STEP 1 - Request OTP
-app.post("/forgot-password", (req, res) => {
-  const email = (req.body.email || "").trim().toLowerCase();
-  if (!email) return res.status(400).json({ message: "Email required" });
-
-  db.query("SELECT id FROM users WHERE email = ?", [email], (err, result) => {
-    if (err) return res.status(500).json({ message: "Database error" });
-    if (result.length === 0)
-      return res
-        .status(404)
-        .json({ message: "No account found with this email." });
-
-    const otp = generateOtp();
-    otpStore[email] = {
-      otp,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-      verified: false,
-    };
-
-    // No email service configured yet - OTP logged to server console.
-    // To go live, replace this console.log with a real email send (nodemailer/SendGrid).
-    console.log("OTP for " + email + ": " + otp + " (expires in 5 min)");
-
-    res.json({
-      message: "OTP sent",
-      ...(process.env.NODE_ENV !== "production" ? { otp } : {}),
-    });
-  });
-});
-
-// STEP 2 - Verify OTP
-app.post("/verify-otp", (req, res) => {
-  const email = (req.body.email || "").trim().toLowerCase();
-  const otp = (req.body.otp || "").trim();
-
-  const record = otpStore[email];
-  if (!record)
-    return res
-      .status(400)
-      .json({ message: "No OTP requested for this email." });
-  if (Date.now() > record.expiresAt) {
-    delete otpStore[email];
-    return res
-      .status(400)
-      .json({ message: "Code expired. Request a new one." });
-  }
-  if (record.otp !== otp)
-    return res.status(400).json({ message: "Invalid code. Try again." });
-
-  record.verified = true;
-  res.json({ message: "OTP verified" });
-});
-
-// STEP 3 - Reset password
-app.post("/reset-password", async (req, res) => {
-  const email = (req.body.email || "").trim().toLowerCase();
-  const otp = (req.body.otp || "").trim();
-  const newPassword = req.body.newPassword || "";
-
-  if (newPassword.length < 6)
-    return res
-      .status(400)
-      .json({ message: "Password must be at least 6 characters." });
-
-  const record = otpStore[email];
-  if (!record || record.otp !== otp || !record.verified) {
-    return res
-      .status(400)
-      .json({ message: "Verification expired. Please request a new code." });
-  }
-  if (Date.now() > record.expiresAt) {
-    delete otpStore[email];
-    return res
-      .status(400)
-      .json({ message: "Code expired. Request a new one." });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    db.query(
-      "UPDATE users SET password = ? WHERE email = ?",
-      [hashedPassword, email],
-      (err) => {
-        if (err)
-          return res.status(500).json({ message: "Could not reset password." });
-        delete otpStore[email];
-        res.json({ message: "Password reset successful" });
-      },
-    );
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// AI CHAT
+// ─── AI CHAT ──────────────────────────────────────────────────────────────────
 const KNOWLEDGE = [
   {
     keywords: [
@@ -376,12 +297,149 @@ app.post("/ai/chat", (req, res) => {
       return res.status(400).json({ error: "User message required." });
     const reply = getSmartAnswer(lastMessage.content);
     setTimeout(() => res.json({ reply }), 600);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Server error." });
   }
 });
 
-// ✅ QUEUE ENDPOINTS
+// ─── BOOKINGS ─────────────────────────────────────────────────────────────────
+
+// ✅ CREATE BOOKING — real sequential token per branch+date
+app.post("/bookings", (req, res) => {
+  const {
+    branchName,
+    bookingDate,
+    timeSlot,
+    tests,
+    totalAmount,
+    orderId,
+    userName,
+    userEmail,
+  } = req.body;
+
+  // Step 1: Get MAX token_number for this branch+date
+  db.query(
+    "SELECT MAX(token_number) AS lastToken FROM bookings WHERE branch = ? AND booking_date = ? AND status != 'cancelled'",
+    [branchName, bookingDate],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: "DB error getting token" });
+
+      const nextToken = (result[0].lastToken || 0) + 1;
+
+      // Step 2: Insert booking with sequential token
+      db.query(
+        `INSERT INTO bookings (user_name, user_email, branch, booking_date, time_slot, tests, total_amount, token_number, order_id, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming')`,
+        [
+          userName,
+          userEmail,
+          branchName,
+          bookingDate,
+          timeSlot,
+          JSON.stringify(tests),
+          totalAmount,
+          nextToken,
+          orderId,
+        ],
+        (err2, result2) => {
+          if (err2)
+            return res
+              .status(500)
+              .json({ error: "Insert error", detail: err2.message });
+
+          // Step 3: Update queue table
+          db.query(
+            "INSERT INTO queue (branch, date, current_number, total_tokens) VALUES (?, ?, 1, ?) ON DUPLICATE KEY UPDATE total_tokens = ?",
+            [branchName, bookingDate, nextToken, nextToken],
+            (err3) => {
+              if (err3) console.log("Queue update error:", err3);
+            },
+          );
+
+          res.json({
+            bookingId: result2.insertId,
+            tokenNumber: nextToken,
+            message: "Booking confirmed",
+          });
+        },
+      );
+    },
+  );
+});
+
+// ✅ GET MY BOOKINGS by email
+app.get("/bookings/my", (req, res) => {
+  const email = req.query.email || "";
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  db.query(
+    `SELECT id, user_name, user_email, branch,
+     DATE_FORMAT(booking_date, '%Y-%m-%d') as booking_date,
+     time_slot, tests, total_amount, token_number,
+     order_id, status, created_at
+     FROM bookings WHERE user_email = ? ORDER BY created_at DESC`,
+    [email],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: "DB error" });
+      res.json(result);
+    },
+  );
+});
+
+// ✅ GET ALL BOOKINGS for a branch+date
+app.get("/bookings/all", (req, res) => {
+  const { branch, date } = req.query;
+  db.query(
+    "SELECT * FROM bookings WHERE branch = ? AND booking_date = ? AND status != 'cancelled' ORDER BY token_number",
+    [branch, date],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: "DB error" });
+      res.json(result);
+    },
+  );
+});
+
+// ✅ GET BOOKED SLOTS for branch+date (for time slot availability)
+app.get("/bookings/slots", (req, res) => {
+  const { branch, date } = req.query;
+  db.query(
+    "SELECT time_slot, COUNT(*) as count FROM bookings WHERE branch = ? AND booking_date = ? AND status != 'cancelled' GROUP BY time_slot",
+    [branch, date],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: "DB error" });
+      res.json(result);
+    },
+  );
+});
+
+// ✅ CANCEL BOOKING
+app.put("/bookings/:id/cancel", (req, res) => {
+  const { id } = req.params;
+  db.query(
+    "UPDATE bookings SET status = 'cancelled' WHERE id = ? OR order_id = ?",
+    [id, id],
+    (err) => {
+      if (err) return res.status(500).json({ error: "DB error" });
+      res.json({ message: "Booking cancelled" });
+    },
+  );
+});
+
+// ✅ UPDATE PAYMENT METHOD
+app.put("/bookings/:id/pay", (req, res) => {
+  const { id } = req.params;
+  const { method, orderId } = req.body;
+  db.query(
+    "UPDATE bookings SET status = 'upcoming', order_id = COALESCE(?, order_id) WHERE id = ? OR order_id = ?",
+    [orderId, id, id],
+    (err) => {
+      if (err) return res.status(500).json({ error: "DB error" });
+      res.json({ message: "Payment updated" });
+    },
+  );
+});
+
+// ─── QUEUE ────────────────────────────────────────────────────────────────────
 app.get("/queue/status", (req, res) => {
   const branch = req.query.branch || "Colombo 03";
   const date = req.query.date || new Date().toISOString().split("T")[0];
@@ -473,154 +531,105 @@ app.get("/queue/all", (req, res) => {
   );
 });
 
-// ✅ BRANCHES
+// ─── BRANCHES ─────────────────────────────────────────────────────────────────
 app.get("/branches", (req, res) => {
   db.query(
     "SELECT * FROM branches WHERE is_active = 1 ORDER BY id",
     (err, result) => {
       if (err) return res.status(500).json({ error: "DB error" });
+      // If no branches in DB, return static data
+      if (result.length === 0) {
+        return res.json([
+          {
+            id: 1,
+            name: "Colombo 03",
+            address: "No. 45, Galle Road, Colombo 03",
+            phone: "+94 11 234 5678",
+            hours: "6:00 AM – 8:00 PM",
+            days: "Mon – Sun",
+            color: "#3B82F6",
+            badge: "Main Branch",
+            services:
+              "CBC,Lipid Profile,Thyroid,Vitamin D,HbA1c,Liver Function,Kidney Function,ESR,Urine Full",
+            parking: 1,
+            ac: 1,
+            wifi: 1,
+            wait_time: "~15 mins",
+            map_url: "https://maps.google.com/?q=Colombo+03+Sri+Lanka",
+          },
+          {
+            id: 2,
+            name: "Nugegoda",
+            address: "No. 12, High Level Road, Nugegoda",
+            phone: "+94 11 876 5432",
+            hours: "7:00 AM – 7:00 PM",
+            days: "Mon – Sun",
+            color: "#A855F7",
+            badge: "South Branch",
+            services:
+              "CBC,Blood Sugar,Lipid Profile,Thyroid,Liver Function,Kidney Function,Urine Full",
+            parking: 1,
+            ac: 1,
+            wifi: 0,
+            wait_time: "~10 mins",
+            map_url: "https://maps.google.com/?q=Nugegoda+Sri+Lanka",
+          },
+          {
+            id: 3,
+            name: "Kandy",
+            address: "No. 78, Peradeniya Road, Kandy",
+            phone: "+94 81 222 3344",
+            hours: "7:00 AM – 6:00 PM",
+            days: "Mon – Sat",
+            color: "#10B981",
+            badge: "Central Branch",
+            services: "CBC,Blood Sugar,Lipid Profile,Thyroid,Urine Full,ESR",
+            parking: 0,
+            ac: 1,
+            wifi: 1,
+            wait_time: "~20 mins",
+            map_url: "https://maps.google.com/?q=Kandy+Sri+Lanka",
+          },
+          {
+            id: 4,
+            name: "Kuliyapitiya",
+            address: "No. 23, Colombo Road, Kuliyapitiya",
+            phone: "+94 37 228 1234",
+            hours: "7:00 AM – 5:00 PM",
+            days: "Mon – Sat",
+            color: "#F59E0B",
+            badge: "North Branch",
+            services: "CBC,Blood Sugar,Lipid Profile,Urine Full,ESR",
+            parking: 1,
+            ac: 1,
+            wifi: 0,
+            wait_time: "~10 mins",
+            map_url: "https://maps.google.com/?q=Kuliyapitiya+Sri+Lanka",
+          },
+          {
+            id: 5,
+            name: "Nikaweratiya",
+            address: "No. 15, Kurunegala Road, Nikaweratiya",
+            phone: "+94 37 226 5678",
+            hours: "7:30 AM – 4:30 PM",
+            days: "Mon – Fri",
+            color: "#EC4899",
+            badge: "West Branch",
+            services: "CBC,Blood Sugar,Urine Full,ESR",
+            parking: 0,
+            ac: 0,
+            wifi: 0,
+            wait_time: "~5 mins",
+            map_url: "https://maps.google.com/?q=Nikaweratiya+Sri+Lanka",
+          },
+        ]);
+      }
       res.json(result);
     },
   );
 });
 
-// ✅ BOOKINGS
-app.post("/bookings", (req, res) => {
-  const {
-    branchName,
-    bookingDate,
-    timeSlot,
-    tests,
-    totalAmount,
-    orderId,
-    userName,
-    userEmail,
-  } = req.body;
-  db.query(
-    "SELECT MAX(token_number) as lastToken FROM bookings WHERE branch = ? AND booking_date = ?",
-    [branchName, bookingDate],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: "DB error" });
-      const nextToken = (result[0].lastToken || 0) + 1;
-      db.query(
-        `INSERT INTO bookings (user_name, user_email, branch, booking_date, time_slot, tests, total_amount, token_number, order_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          userName,
-          userEmail,
-          branchName,
-          bookingDate,
-          timeSlot,
-          JSON.stringify(tests),
-          totalAmount,
-          nextToken,
-          orderId,
-        ],
-        (err2, result2) => {
-          if (err2) return res.status(500).json({ error: "Insert error" });
-          // Queue auto-update
-          db.query(
-            "SELECT * FROM queue WHERE branch = ? AND date = ?",
-            [branchName, bookingDate],
-            (err3, qResult) => {
-              if (!err3) {
-                if (qResult && qResult.length > 0) {
-                  db.query(
-                    "UPDATE queue SET total_tokens = ? WHERE branch = ? AND date = ?",
-                    [nextToken, branchName, bookingDate],
-                  );
-                } else {
-                  db.query(
-                    "INSERT INTO queue (branch, date, current_number, total_tokens) VALUES (?, ?, 1, ?)",
-                    [branchName, bookingDate, nextToken],
-                  );
-                }
-              }
-              console.log(
-                `✅ Queue updated: ${branchName} | ${bookingDate} | token #${nextToken}`,
-              );
-            },
-          );
-          res.json({
-            bookingId: result2.insertId,
-            tokenNumber: nextToken,
-            message: "Booking confirmed",
-          });
-        },
-      );
-    },
-  );
-});
-
-app.get("/bookings/my", (req, res) => {
-  const email = req.query.email || "";
-  db.query(
-    `SELECT id, user_name, user_email, branch,
-     DATE_FORMAT(booking_date, '%Y-%m-%d') as booking_date,
-     time_slot, tests, total_amount, token_number,
-     order_id, status, created_at
-     FROM bookings WHERE user_email = ? ORDER BY created_at DESC`,
-    [email],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: "DB error" });
-      res.json(result);
-    },
-  );
-});
-
-app.get("/bookings/all", (req, res) => {
-  const { branch, date } = req.query;
-  db.query(
-    "SELECT * FROM bookings WHERE branch = ? AND booking_date = ? ORDER BY token_number",
-    [branch, date],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: "DB error" });
-      res.json(result);
-    },
-  );
-});
-
-app.put("/bookings/:id/cancel", (req, res) => {
-  const { id } = req.params;
-  db.query(
-    "UPDATE bookings SET status = 'cancelled' WHERE id = ? OR order_id = ?",
-    [id, id],
-    (err) => {
-      if (err) return res.status(500).json({ error: "DB error" });
-      res.json({ message: "Booking cancelled" });
-    },
-  );
-});
-
-app.get("/bookings/slots", (req, res) => {
-  const { branch, date } = req.query;
-  db.query(
-    "SELECT time_slot, COUNT(*) as count FROM bookings WHERE branch = ? AND booking_date = ? GROUP BY time_slot",
-    [branch, date],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: "DB error" });
-      res.json(result);
-    },
-  );
-});
-
-// ✅ AI Slot suggestion
-app.post("/ai/suggest-slot", (req, res) => {
-  const { tests } = req.body;
-  const needsFasting =
-    tests &&
-    tests.some((t) =>
-      ["sugar", "fbs", "lipid", "liver", "lft"].some((k) =>
-        t.toLowerCase().includes(k),
-      ),
-    );
-  const suggestion = needsFasting
-    ? "🌅 Best time: 7:00 AM — Fasting required. Schedule early morning for best results."
-    : "🕖 Best time: 7:30 AM — No fasting needed. Morning slots have shorter wait times.";
-  res.json({ suggestion });
-});
-
-// ✅ START SERVER
+// ─── START SERVER ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
