@@ -16,6 +16,7 @@ import { useRef, useEffect, useState } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+
 const { width } = Dimensions.get("window");
 
 interface User {
