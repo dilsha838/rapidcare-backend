@@ -1,6 +1,7 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { View, Text, StyleSheet, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // ─── CUSTOM TAB BAR ICON ──────────────────────────────────────────────────────
 function TabIcon({
@@ -30,6 +31,9 @@ function TabIcon({
 }
 
 export default function TabLayout() {
+  // ✅ Get device safe area (handles gesture nav bar / home indicator height)
+  const insets = useSafeAreaInsets();
+
   return (
     <Tabs
       screenOptions={{
@@ -41,8 +45,8 @@ export default function TabLayout() {
           backgroundColor: "#080818",
           borderTopWidth: 0.5,
           borderTopColor: "#1C1C3A",
-          height: Platform.OS === "ios" ? 85 : 70,
-          paddingBottom: Platform.OS === "ios" ? 20 : 8,
+          height: 62 + insets.bottom, // ✅ base height + device safe area
+          paddingBottom: insets.bottom > 0 ? insets.bottom : 10, // ✅ push above gesture bar
           paddingTop: 8,
           paddingHorizontal: 8,
           elevation: 20,
@@ -130,7 +134,6 @@ export default function TabLayout() {
       />
 
       {/* Hidden tabs — not in tab bar */}
-    
     </Tabs>
   );
 }
@@ -175,42 +178,24 @@ const styles = StyleSheet.create({
   tabLabelActive: {
     fontWeight: "800",
   },
-  tabBarStyle: {
-    backgroundColor: "#080818",
-    borderTopWidth: 0.5,
-    borderTopColor: "#1C1C3A",
-    height: Platform.OS === "ios" ? 85 : 70,
-    paddingBottom: Platform.OS === "ios" ? 20 : 8,
-    paddingTop: 8,
-    paddingHorizontal: 8,
-    marginBottom: 20, //
-    marginHorizontal: 16, //
-    borderRadius: 20, // ← round corners
-    elevation: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-  },
   // Center booking button
   centerTabWrap: {
     alignItems: "center",
     justifyContent: "center",
     gap: 3,
-    paddingTop: 4, // ← same as tabItem
+    paddingTop: 4,
   },
   centerTab: {
-    width: 40, // ← 52 → 40
-    height: 40, // ← 52 → 40
-    borderRadius: 12, // ← 16 → 12
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
-    // ← marginTop: -16 DELETE
     elevation: 8,
   },
   centerTabLabel: {
     fontSize: 8,
     fontWeight: "700",
-    // ← marginTop: 2 DELETE
   },
 });
+  

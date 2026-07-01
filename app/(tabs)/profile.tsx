@@ -105,6 +105,8 @@ export default function ProfileScreen() {
     }
   };
 
+  // ✅ FIXED: savedEmail / savedPassword NO LONGER removed on logout,
+  // so fingerprint login keeps working after Sign Out.
   const handleLogout = async () => {
     Alert.alert("Sign Out", "Are you sure you want to sign out?", [
       { text: "Cancel", style: "cancel" },
@@ -115,8 +117,6 @@ export default function ProfileScreen() {
           await AsyncStorage.multiRemove([
             "user",
             "authToken",
-            "savedEmail",
-            "savedPassword",
             "biometricEnabled",
             "lastToken",
             "upcomingAppointment",

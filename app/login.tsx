@@ -58,15 +58,14 @@ export default function Login() {
         return;
       }
 
-      // Check biometric availability
+      // Check biometric hardware availability (device level, not saved-credentials level)
       const compatible = await LocalAuthentication.hasHardwareAsync();
       const enrolled = await LocalAuthentication.isEnrolledAsync();
       const hasSaved = await AsyncStorage.getItem("savedEmail");
-      const hasSavedPwd = await AsyncStorage.getItem("savedPassword");
 
-      if (compatible && enrolled && hasSaved && hasSavedPwd) {
+      if (compatible && enrolled) {
         setHasBiometric(true);
-        setSavedEmail(hasSaved);
+        setSavedEmail(hasSaved); // may be null on first-ever login, that's fine
       }
     } catch {}
 
@@ -177,15 +176,18 @@ export default function Login() {
       if (result.success) {
         // Get saved credentials and login
         const savedPwd = await AsyncStorage.getItem("savedPassword");
-        const savedEmail = await AsyncStorage.getItem("savedEmail");
+        const savedEmailVal = await AsyncStorage.getItem("savedEmail");
 
-        if (!savedEmail || !savedPwd) {
-          setError("Saved credentials not found. Please login with password.");
+        if (!savedEmailVal || !savedPwd) {
+          setError(
+            "No saved account found. Please login with email & password first.",
+          );
+          shake();
           return;
         }
 
         setLoading(true);
-        await performLogin(savedEmail, savedPwd);
+        await performLogin(savedEmailVal, savedPwd);
       } else if (result.error === "user_cancel") {
         // User cancelled — do nothing
       } else {
@@ -352,9 +354,11 @@ export default function Login() {
               >
                 <View style={s.bioLeft}>
                   <Text style={s.bioWelcome}>Welcome back!</Text>
-                  <Text style={s.bioEmail} numberOfLines={1}>
-                    {savedEmail}
-                  </Text>
+                  {savedEmail && (
+                    <Text style={s.bioEmail} numberOfLines={1}>
+                      {savedEmail}
+                    </Text>
+                  )}
                   <Text style={s.bioHint}>
                     Use fingerprint to sign in instantly
                   </Text>
